@@ -26,6 +26,7 @@ genrule(
 )
 
 TEXT_DICTS = glob(["*.txt"]) + [
+    "TSCharactersExt.txt",
     "TWVariantsRev.txt",
     "HKVariantsRev.txt",
     "JPVariantsRev.txt",
@@ -37,6 +38,7 @@ NON_BMP_TEXT_DICTS = [
     if txt not in [
         "STCharacters.txt",
         "TSCharacters.txt",
+        "TSCharactersExt.txt",
     ]
 ]
 
@@ -78,9 +80,9 @@ filegroup(
             txt.replace(".txt", ".ocd2"),
         ],
         deps = [
-            "//src:lexicon",
-            "//src:marisa_dict",
-            "//src:utf8_util",
+            "//src:lexicon_lib",
+            "//src:marisa_dict_lib",
+            "//src:utf8_util_lib",
             "@bazel_tools//tools/cpp/runfiles",
             "@googletest//:gtest_main",
         ],
@@ -97,8 +99,8 @@ cc_test(
         "TWPhrasesRev.txt",
     ],
     deps = [
-        "//src:lexicon",
-        "//src:utf8_util",
+        "//src:lexicon_lib",
+        "//src:utf8_util_lib",
         "@bazel_tools//tools/cpp/runfiles",
         "@googletest//:gtest_main",
     ],
@@ -113,8 +115,8 @@ cc_test(
         "TWPhrases.txt",
     ],
     deps = [
-        "//src:lexicon",
-        "//src:utf8_util",
+        "//src:lexicon_lib",
+        "//src:utf8_util_lib",
         "@bazel_tools//tools/cpp/runfiles",
         "@googletest//:gtest_main",
     ],
@@ -141,7 +143,7 @@ test_suite(
         ],
         data = [txt],
         deps = [
-            "//src:utf8_util",
+            "//src:utf8_util_lib",
             "@bazel_tools//tools/cpp/runfiles",
             "@googletest//:gtest_main",
         ],
