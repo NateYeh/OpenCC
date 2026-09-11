@@ -18,16 +18,37 @@
 
 #pragma once
 
+#include <string>
+#include <string_view>
+
 #include "Common.hpp"
 
 namespace opencc {
 /**
- * Abstract segmentation
+ * Abstract base for text segmentation.
+ *
+ * Splits a UTF-8 string into an ordered list of segments. Each segment is
+ * either a dictionary-matched word or a single unmatched code point / IDS
+ * sequence.  The primary virtual is Segment(std::string_view); the
+ * @c const @c char* and @c const @c std::string& overloads are non-virtual
+ * convenience adapters that forward to it.
+ *
  * @ingroup opencc_cpp_api
  */
 class OPENCC_EXPORT Segmentation {
 public:
   virtual ~Segmentation() {}
-  virtual SegmentsPtr Segment(const std::string& text) const = 0;
+
+  /**
+   * Splits @p text into segments and returns them.
+   * This is the primary override point for subclasses.
+   */
+  virtual SegmentsPtr Segment(std::string_view text) const = 0;
+
+  /** Convenience overload for null-terminated C strings. */
+  SegmentsPtr Segment(const char* text) const;
+
+  /** Convenience overload for std::string. */
+  SegmentsPtr Segment(const std::string& str) const;
 };
 } // namespace opencc

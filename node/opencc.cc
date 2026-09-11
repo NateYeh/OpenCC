@@ -1,11 +1,13 @@
 #include <napi.h>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "src/Config.hpp"
 #include "src/Converter.hpp"
 #include "src/DictConverter.hpp"
 #include "src/Exception.hpp"
+#include "src/ResourceProvider.hpp"
 
 using namespace opencc;
 
@@ -57,6 +59,25 @@ public:
       : Napi::ObjectWrap<OpenccBinding>(info), config_(), converter_() {
     Napi::Env env = info.Env();
 
+    if (info.Length() >= 3 && info[0].IsString() && info[1].IsString() &&
+        info[2].IsBoolean()) {
+      // Three-argument mode:
+      // NewFromFile(configFileName, ZipResourceProvider(resourceZipFileName)).
+      const std::string configFile = ToUtf8String(info[0]);
+      const std::string resourceZipFile = ToUtf8String(info[1]);
+      ConfigLoadOptions options;
+      options.includeTofuRiskDictionaries =
+          info[2].As<Napi::Boolean>().Value();
+      try {
+        std::shared_ptr<ResourceProvider> provider(
+            new ZipResourceProvider(resourceZipFile));
+        converter_ = config_.NewFromFile(configFile, provider, options);
+      } catch (opencc::Exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+      }
+      return;
+    }
+
     if (info.Length() >= 2 && info[0].IsString() && info[1].IsString()) {
       // Two-argument mode: NewFromString(jsonString, configDirectory)
       // Used by the JS layer to pass patched JSON with absolute paths.
@@ -90,14 +111,14 @@ public:
 
   ~OpenccBinding() override {}
 
-  std::string Convert(const std::string& input) {
+  std::string Convert(std::string_view input) {
     return converter_->Convert(input);
   }
 
   ConverterPtr GetConverter() const { return converter_; }
 
   static Napi::Value Version(const Napi::CallbackInfo& info) {
-    return Napi::String::New(info.Env(), VERSION);
+    return Napi::String::New(info.Env(), OPENCC_VERSION);
   }
 
   Napi::Value Convert(const Napi::CallbackInfo& info) {
@@ -124,7 +145,7 @@ public:
     const std::string input = ToUtf8String(info[0]);
     std::string output;
     try {
-      output = Convert(input);
+      output = Convert(std::string_view(input));
     } catch (opencc::Exception& e) {
       Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
       return env.Undefined();
@@ -195,10 +216,10 @@ public:
       std::string output;
       if (info[0].IsBuffer()) {
         Napi::Buffer<char> input = info[0].As<Napi::Buffer<char>>();
-        output = stream_->ConvertChunk(input.Data(), input.Length());
+        output = stream_->ConvertChunk({input.Data(), input.Length()});
       } else {
         const std::string input = ToUtf8String(info[0]);
-        output = stream_->ConvertChunk(input.data(), input.size());
+        output = stream_->ConvertChunk(input);
       }
       return Napi::String::New(env, output);
     } catch (opencc::Exception& e) {
@@ -218,12 +239,11 @@ public:
       if (info.Length() >= 1 && info[0].IsBuffer()) {
         Napi::Buffer<char> input = info[0].As<Napi::Buffer<char>>();
         return Napi::String::New(
-            env, stream_->Finish(input.Data(), input.Length()));
+            env, stream_->Finish({input.Data(), input.Length()}));
       }
       if (info.Length() >= 1) {
         const std::string input = ToUtf8String(info[0]);
-        return Napi::String::New(env,
-                                 stream_->Finish(input.data(), input.size()));
+        return Napi::String::New(env, stream_->Finish(input));
       }
       return Napi::String::New(env, stream_->Finish());
     } catch (opencc::Exception& e) {

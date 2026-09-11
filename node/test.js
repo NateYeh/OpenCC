@@ -1,15 +1,16 @@
 const assert = require('assert');
 const childProcess = require('child_process');
 const fs = require('fs');
-const nodeGypBuild = require('node-gyp-build');
 const os = require('os');
 const path = require('path');
-const util = require('util');
+const { after, describe, it } = require('node:test');
 
 const OpenCC = require('./opencc');
 const { prepareArtifacts } = require('../scripts/prepare-node-prebuild-artifacts');
 
-const cases = JSON.parse(fs.readFileSync('test/testcases/testcases.json', 'utf-8')).cases || [];
+const parseJSON = OpenCC._parseJSON;
+
+const cases = parseJSON(fs.readFileSync('test/testcases/testcases.json', 'utf-8')).cases || [];
 
 function createLocalInstalledShape() {
   const rootDir = path.resolve(__dirname, '..');
@@ -20,6 +21,7 @@ function createLocalInstalledShape() {
   const requiredFiles = [
     path.join(jiebaPackageDir, 'index.js'),
     path.join(jiebaPackageDir, 'data', 's2twp_jieba.json'),
+    path.join(jiebaPackageDir, 'data', 'tw2sp_jieba.json'),
     path.join(jiebaPackageDir, 'data', 'jieba_dict', 'jieba_merged.ocd2'),
     path.join(jiebaPackageDir, 'prebuilds', `${os.platform()}-${os.arch()}`, libName),
   ];
@@ -34,19 +36,24 @@ function createLocalInstalledShape() {
   return root;
 }
 
-const testSync = function (tc, cfg, expected, done) {
+const testSync = function (tc, cfg, expected) {
   const opencc = new OpenCC(cfg + '.json');
   const converted = opencc.convertSync(tc.input);
   assert.equal(converted, expected);
-  done();
 };
 
-const testAsync = function (tc, cfg, expected, done) {
-  const opencc = new OpenCC(cfg + '.json');
-  opencc.convert(tc.input, function (err, converted) {
-    if (err) return done(err);
-    assert.equal(converted, expected);
-    done();
+const testAsync = function (tc, cfg, expected) {
+  return new Promise(function (resolve, reject) {
+    const opencc = new OpenCC(cfg + '.json');
+    opencc.convert(tc.input, function (err, converted) {
+      if (err) return reject(err);
+      try {
+        assert.equal(converted, expected);
+        resolve();
+      } catch (e) {
+        reject(e);
+      }
+    });
   });
 };
 
@@ -59,18 +66,179 @@ async function testAsyncPromise(tc, cfg, expected) {
 describe('Sync API', function () {
   cases.forEach(function (tc, idx) {
     Object.entries(tc.expected || {}).forEach(function ([cfg, expected]) {
-      it('[' + cfg + '] case #' + (idx + 1), function (done) {
-        testSync(tc, cfg, expected, done);
+      it('[' + cfg + '] case #' + (idx + 1), function () {
+        testSync(tc, cfg, expected);
       });
     });
+  });
+});
+
+describe('API compatibility', function () {
+  it('includes tofu-risk dictionaries by default', function () {
+    const opencc = new OpenCC('t2s.json');
+    assert.equal(opencc.convertSync('㑮'), '𫝈');
+  });
+
+  it('supports inline configuration objects', function () {
+    const opencc = new OpenCC({
+      name: 'Inline Object Config',
+      segmentation: {
+        type: 'mmseg',
+        dict: {
+          type: 'inline',
+          entries: {
+            '鼠标': '鼠标',
+          },
+        },
+      },
+      conversion_chain: [{
+        dict: {
+          type: 'inline',
+          entries: {
+            '鼠标': '滑鼠',
+          },
+        },
+      }],
+    });
+
+    assert.equal(opencc.convertSync('鼠标坏了'), '滑鼠坏了');
+  });
+
+  it('uses bundled assets as the default inline configuration directory', function () {
+    const opencc = OpenCC.fromConfig({
+      name: 'Inline Object Config With Bundled Assets',
+      conversion_chain: [{
+        dict: { type: 'ocd2', file: 'STCharacters.ocd2' },
+      }],
+    });
+
+    assert.equal(opencc.convertSync('汉字'), '漢字');
+  });
+
+  it('supports inline configuration objects with relative dictionary files', function () {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencc-node-inline-config-'));
+    const dict = path.join(dir, 'phrases.txt');
+    fs.writeFileSync(dict, '鼠标\t滑鼠\n', 'utf8');
+
+    try {
+      const opencc = new OpenCC({
+        name: 'Inline Object Config With Files',
+        segmentation: {
+          type: 'mmseg',
+          dict: { type: 'text', file: 'phrases.txt' },
+        },
+        conversion_chain: [{
+          dict: { type: 'text', file: 'phrases.txt' },
+        }],
+      }, { configDirectory: dir });
+
+      assert.equal(opencc.convertSync('鼠标坏了'), '滑鼠坏了');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('supports OpenCC.fromConfig with group tofu-risk dictionary filtering', function () {
+    const config = {
+      name: 'Inline Object Config Tofu Risk',
+      conversion_chain: [
+        {
+          dict: {
+            type: 'group',
+            may_output_tofu: true,
+            match_policy: 'short_circuit',
+            dicts: [{
+              type: 'inline',
+              entries: {
+                'A': 'B',
+              },
+            }],
+          },
+        },
+        {
+          dict: {
+            type: 'inline',
+            entries: {
+              'A': 'C',
+            },
+          },
+        },
+      ],
+    };
+
+    const opencc = OpenCC.fromConfig(config, { includeTofuRiskDictionaries: false });
+    assert.equal(opencc.convertSync('A'), 'C');
+    assert.equal(config.conversion_chain.length, 2);
+  });
+
+  it('rejects inline tofu-risk dictionaries consistently with C++ config parsing', function () {
+    const result = childProcess.spawnSync(process.execPath, ['-e', `
+      const assert = require('assert');
+      const OpenCC = require('./node/opencc');
+      assert.throws(function () {
+        OpenCC.fromConfig({
+          name: 'Inline Object Config Invalid Tofu Risk',
+          conversion_chain: [{
+            dict: {
+              type: 'inline',
+              may_output_tofu: true,
+              entries: {
+                'A': 'B',
+              },
+            },
+          }],
+        }, { includeTofuRiskDictionaries: false });
+      }, /Inline dictionary does not support may_output_tofu/);
+    `], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  it('supports JSONC (JSON with comments and trailing commas) configuration files', function () {
+    const tempConfigPath = path.join(os.tmpdir(), 'test_comment_config.json');
+    fs.writeFileSync(tempConfigPath, `
+      // This is a single line comment
+      {
+        "name": "Test Config", /* This is a multi-line
+        comment */
+        "segmentation": {
+          "type": "mmseg",
+          "dict": {
+            "type": "inline",
+            "entries": {},
+          },
+        },
+        "conversion_chain": [{
+          "dict": {
+            "type": "inline",
+            "entries": {
+              "A": "B",
+            },
+          },
+        }],
+      }
+    `);
+    try {
+      const opencc = new OpenCC(tempConfigPath, { includeTofuRiskDictionaries: false });
+      assert.equal(opencc.convertSync('A'), 'B');
+
+      const openccWithTofu = new OpenCC(tempConfigPath, { includeTofuRiskDictionaries: true });
+      assert.equal(openccWithTofu.convertSync('A'), 'B');
+    } finally {
+      if (fs.existsSync(tempConfigPath)) {
+        fs.unlinkSync(tempConfigPath);
+      }
+    }
   });
 });
 
 describe('Async API', function () {
   cases.forEach(function (tc, idx) {
     Object.entries(tc.expected || {}).forEach(function ([cfg, expected]) {
-      it('[' + cfg + '] case #' + (idx + 1), function (done) {
-        testAsync(tc, cfg, expected, done);
+      it('[' + cfg + '] case #' + (idx + 1), function () {
+        return testAsync(tc, cfg, expected);
       });
     });
   });
@@ -79,8 +247,8 @@ describe('Async API', function () {
 describe('Async Promise API', function () {
   cases.forEach(function (tc, idx) {
     Object.entries(tc.expected || {}).forEach(function ([cfg, expected]) {
-      it('[' + cfg + '] case #' + (idx + 1), function (done) {
-        testAsyncPromise(tc, cfg, expected).then(() => done(), done);
+      it('[' + cfg + '] case #' + (idx + 1), function () {
+        return testAsyncPromise(tc, cfg, expected);
       });
     });
   });
@@ -89,17 +257,9 @@ describe('Async Promise API', function () {
 describe('npm CLI', function () {
   const cli = path.join(__dirname, 'cli.js');
 
+  // The opencc module already resolves the addon and its adjacent assets dir.
   function getAssetsPath() {
-    const bindingPath = nodeGypBuild.path(path.join(__dirname, '..'));
-    const bindingDir = path.dirname(bindingPath);
-    const prebuildsDir = path.dirname(bindingDir);
-    if (path.basename(prebuildsDir) === 'prebuilds') {
-      const sharedAssetsPath = path.join(prebuildsDir, 'assets');
-      if (fs.existsSync(sharedAssetsPath)) {
-        return sharedAssetsPath;
-      }
-    }
-    return bindingDir;
+    return OpenCC._assetsPath;
   }
 
   it('converts stdin to stdout', function () {
@@ -127,6 +287,29 @@ describe('npm CLI', function () {
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, '漢字');
+  });
+
+  it('skips tofu-risk dictionaries by default', function () {
+    const result = childProcess.spawnSync(process.execPath, [cli, '-c', 't2s.json'], {
+      input: '㑮',
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '㑮');
+  });
+
+  it('includes tofu-risk dictionaries when requested', function () {
+    const result = childProcess.spawnSync(process.execPath, [
+      cli,
+      '-c',
+      't2s.json',
+      '--include-tofu-risk-dictionaries',
+    ], {
+      input: '㑮',
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '𫝈');
   });
 
   it('converts input file to output file', function () {
@@ -212,7 +395,9 @@ describe('npm CLI', function () {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencc-node-cli-config-'));
     const assetsPath = getAssetsPath();
     fs.copyFileSync(path.join(assetsPath, 's2t.json'), path.join(dir, 'custom-s2t.json'));
+    fs.copyFileSync(path.join(assetsPath, 'CJK_Compatibility_Ideographs.ocd2'), path.join(dir, 'CJK_Compatibility_Ideographs.ocd2'));
     fs.copyFileSync(path.join(assetsPath, 'STPhrases.ocd2'), path.join(dir, 'STPhrases.ocd2'));
+    fs.copyFileSync(path.join(assetsPath, 'STPhrases_GeneratedFromRegionalPhrases.ocd2'), path.join(dir, 'STPhrases_GeneratedFromRegionalPhrases.ocd2'));
     fs.copyFileSync(path.join(assetsPath, 'STCharacters.ocd2'), path.join(dir, 'STCharacters.ocd2'));
 
     const result = childProcess.spawnSync(process.execPath, [cli, '-c', './custom-s2t.json'], {
@@ -249,6 +434,7 @@ describe('npm CLI', function () {
     assert.match(result.stdout, /Unsupported in the npm CLI:/);
     assert.match(result.stdout, /--inspect/);
     assert.match(result.stdout, /--segmentation/);
+    assert.match(result.stdout, /--ambiguities/);
   });
 
   it('prints version', function () {
@@ -271,6 +457,12 @@ describe('npm CLI', function () {
     });
     assert.notEqual(segmentation.status, 0);
     assert.match(segmentation.stderr, /not supported/);
+
+    const ambiguities = childProcess.spawnSync(process.execPath, [cli, '--ambiguities'], {
+      encoding: 'utf8',
+    });
+    assert.notEqual(ambiguities.status, 0);
+    assert.match(ambiguities.stderr, /not supported/);
   });
 
   it('rejects empty inline option values', function () {
@@ -388,9 +580,12 @@ describe('npm CLI', function () {
 });
 
 describe('Optional opencc-jieba package integration', function () {
-  it('loads jieba configs by mode name in the JavaScript API', function () {
+  it('loads jieba configs by mode name in the JavaScript API', function (t) {
     const installRoot = createLocalInstalledShape();
-    if (!installRoot) this.skip();
+    if (!installRoot) {
+      t.skip();
+      return;
+    }
 
     const script = [
       "const OpenCC = require('opencc');",
@@ -406,9 +601,37 @@ describe('Optional opencc-jieba package integration', function () {
     assert.equal(result.stdout, '雲端計算');
   });
 
-  it('loads jieba configs by mode name in the npm CLI', function () {
+  it('resolves normalization dict paths in jieba configs', function (t) {
     const installRoot = createLocalInstalledShape();
-    if (!installRoot) this.skip();
+    if (!installRoot) {
+      t.skip();
+      return;
+    }
+
+    // U+F900 is a CJK Compatibility Ideograph; normalization maps it to U+8C48.
+    // If normalization dict paths are not resolved correctly the converter fails
+    // to load entirely, so a successful conversion also proves path resolution.
+    const script = [
+      "const OpenCC = require('opencc');",
+      "const converter = new OpenCC('s2twp_jieba');",
+      "const result = converter.convertSync('豈');",
+      "process.stdout.write(result.codePointAt(0).toString(16));",
+    ].join('');
+    const result = childProcess.spawnSync(process.execPath, ['-e', script], {
+      cwd: installRoot,
+      env: { ...process.env },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '8c48');
+  });
+
+  it('loads jieba configs by mode name in the npm CLI', function (t) {
+    const installRoot = createLocalInstalledShape();
+    if (!installRoot) {
+      t.skip();
+      return;
+    }
 
     const result = childProcess.spawnSync(process.execPath, [
       path.join(installRoot, 'node_modules', 'opencc', 'node', 'cli.js'),
@@ -422,6 +645,49 @@ describe('Optional opencc-jieba package integration', function () {
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, '雲端計算');
+  });
+
+  it('skips tofu-risk dictionaries in jieba configs by default in the npm CLI', function (t) {
+    const installRoot = createLocalInstalledShape();
+    if (!installRoot) {
+      t.skip();
+      return;
+    }
+
+    const result = childProcess.spawnSync(process.execPath, [
+      path.join(installRoot, 'node_modules', 'opencc', 'node', 'cli.js'),
+      '-c',
+      'tw2sp_jieba',
+    ], {
+      cwd: installRoot,
+      env: { ...process.env },
+      input: '㑮',
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '㑮');
+  });
+
+  it('includes tofu-risk dictionaries in jieba configs when requested in the npm CLI', function (t) {
+    const installRoot = createLocalInstalledShape();
+    if (!installRoot) {
+      t.skip();
+      return;
+    }
+
+    const result = childProcess.spawnSync(process.execPath, [
+      path.join(installRoot, 'node_modules', 'opencc', 'node', 'cli.js'),
+      '-c',
+      'tw2sp_jieba',
+      '--include-tofu-risk-dictionaries',
+    ], {
+      cwd: installRoot,
+      env: { ...process.env },
+      input: '㑮',
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '𫝈');
   });
 });
 

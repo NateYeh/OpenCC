@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 
 #include "Common.hpp"
 #include "ConversionInspection.hpp"
@@ -27,44 +28,84 @@
 
 namespace opencc {
 /**
- * Controller of segmentation and conversion
+ * Abstract base for full-text converters.
+ *
+ * A @c Converter accepts a complete UTF-8 string and returns the converted
+ * result.  Internally it coordinates @c Segmentation (splitting text into
+ * words) and a @c ConversionChain (applying one or more dictionaries to each
+ * segment).  Concrete implementations:
+ *
+ *  - @c SingleStageConverter — one segmentation pass + one @c ConversionChain.
+ *  - @c PipelineConverter — passes text through a sequence of @c Converter
+ *    stages in order, each with its own segmentation and chain.
+ *
+ * Config-backed converters may additionally expose the main conversion chain
+ * via @c GetConversionChain() even when an internal normalization pre-pass is
+ * present.
+ *
  * @ingroup opencc_cpp_api
  */
 class OPENCC_EXPORT Converter {
 public:
-  Converter(const std::string& _name, SegmentationPtr _segmentation,
-            ConversionChainPtr _conversionChain)
-      : name(_name), segmentation(_segmentation),
-        conversionChain(_conversionChain) {}
+  virtual ~Converter() = default;
 
-  std::string Convert(const std::string& text) const;
+  /**
+   * Converts @p text and returns the result.
+   * @param text UTF-8 input; need not be null-terminated.
+   */
+  virtual std::string Convert(std::string_view text) const = 0;
 
-  size_t Convert(const char* input, char* output) const;
+  /**
+   * Converts @p text and returns a detailed inspection result that includes
+   * the initial segmentation, per-stage intermediate segments, and final
+   * output.  Intended for debugging and tooling rather than production
+   * conversion.
+   */
+  virtual ConversionInspectionResult Inspect(std::string_view text) const = 0;
 
-  ConversionInspectionResult Inspect(const std::string& text) const;
+  /**
+   * Returns the segmentation used by this converter, or @c nullptr if the
+   * converter has no single segmentation (e.g. @c PipelineConverter).
+   */
+  virtual SegmentationPtr GetSegmentation() const = 0;
 
-  const SegmentationPtr GetSegmentation() const { return segmentation; }
-
-  const ConversionChainPtr GetConversionChain() const {
-    return conversionChain;
-  }
-
-private:
-  const std::string name;
-  const SegmentationPtr segmentation;
-  const ConversionChainPtr conversionChain;
+  /**
+   * Returns the conversion chain used by this converter, or @c nullptr if the
+   * converter has no single chain (e.g. @c PipelineConverter).
+   */
+  virtual ConversionChainPtr GetConversionChain() const = 0;
 };
 
 class OPENCC_EXPORT ConverterStream {
 public:
-  explicit ConverterStream(ConverterPtr _converter, size_t _maxKeepChars = 16)
-      : converter(_converter), maxKeepChars(_maxKeepChars) {}
+  /**
+   * @param converter   The converter applied to each flushed chunk.
+   * @param maxKeepChars  Number of Unicode code points (not bytes) to retain
+   *   at the end of the pending buffer after each ConvertChunk() call, so
+   *   that a phrase or IDS straddling two consecutive chunks is not split
+   *   across separate Convert() invocations.  Defaults to 16 code points.
+   */
+  explicit ConverterStream(ConverterPtr converter, size_t maxKeepChars = 16)
+      : converter(converter), maxKeepChars(maxKeepChars) {}
 
-  std::string ConvertChunk(const char* input, size_t length);
+  /**
+   * Appends @p input to pending, then emits everything up to the last
+   * @c maxKeepChars code points (extended if an incomplete IDS is detected).
+   * The kept tail remains in pending so that a phrase or IDS spanning two
+   * consecutive calls is not split across separate Convert() invocations.
+   */
+  std::string ConvertChunk(std::string_view input);
+
+  /**
+   * Appends @p input to pending and flushes everything at once.
+   * @note Not equivalent to ConvertChunk(@p input) + Finish(): ConvertChunk
+   *   applies the keepStart window and issues two Convert() calls, which
+   *   breaks phrase or IDS matches that span the boundary.
+   *   Use this overload for the final chunk when no more data is coming.
+   */
+  std::string Finish(std::string_view input);
 
   std::string Finish();
-
-  std::string Finish(const char* input, size_t length);
 
 private:
   ConverterPtr converter;

@@ -22,6 +22,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <string_view>
 
 #ifdef _WIN32
 #include <fcntl.h>
@@ -34,10 +35,13 @@
 #include "rapidjson/stringbuffer.h"
 #include "src/CmdLineOutput.hpp"
 #include "src/Config.hpp"
+#include "src/ConversionAmbiguities.hpp"
 #include "src/ConversionInspection.hpp"
 #include "src/Converter.hpp"
 #include "src/Exception.hpp"
+#include "src/ResourceProvider.hpp"
 #include "src/Segments.hpp"
+#include "src/UTF8Util.hpp"
 #include "src/tools/CommandLineMain.hpp"
 #include "src/tools/PlatformIO.hpp"
 
@@ -48,6 +52,7 @@ enum class OutputMode {
   Convert,
   Segmentation,
   Inspect,
+  Ambiguities,
 };
 
 class OpenCCOutput : public CmdLineOutput {
@@ -69,6 +74,10 @@ public:
         << std::endl
         << "   hk2s.json   Traditional Chinese (Hong Kong variant) to Simplified Chinese"
         << std::endl
+        << "   s2hkp.json  Simplified Chinese to Traditional Chinese (Hong Kong variant, with Hong Kong Phrases)"
+        << std::endl
+        << "   hk2sp.json  Traditional Chinese (Hong Kong variant) to Simplified Chinese (Mainland China Phrases)"
+        << std::endl
         << "   s2twp.json  Simplified Chinese to Traditional Chinese (Taiwan Standard, with Taiwan Phrases)"
         << std::endl
         << "   tw2sp.json  Traditional Chinese (Taiwan Standard) to Simplified Chinese (Mainland China Phrases)"
@@ -81,9 +90,9 @@ public:
         << std::endl
         << "   t2hk.json   Traditional Chinese (OpenCC Standard) to Traditional Chinese (Hong Kong variant)"
         << std::endl
-        << "   t2jp.json   Traditional Chinese Characters (Kyūjitai) to New Japanese Kanji (Shinjitai)"
+        << "   t2jp.json   Old Japanese Kanji (Kyūjitai) to New Japanese Kanji (Shinjitai)"
         << std::endl
-        << "   jp2t.json   New Japanese Kanji (Shinjitai) to Traditional Chinese Characters (Kyūjitai)"
+        << "   jp2t.json   New Japanese Kanji (Shinjitai) to Old Japanese Kanji (Kyūjitai)"
         << std::endl
         << std::endl;
   }
@@ -98,6 +107,8 @@ bool inPlace = false;
 OutputMode outputMode = OutputMode::Convert;
 Config config;
 ConverterPtr converter;
+bool variationSelectorWarningShown = false;
+std::string variationSelectorScanTail;
 
 struct MeasurementResult {
   double loadMs = 0.0;
@@ -191,6 +202,9 @@ void WriteMeasuredResult() {
   case OutputMode::Inspect:
     writer.String("inspect");
     break;
+  case OutputMode::Ambiguities:
+    writer.String("ambiguities");
+    break;
   default:
     writer.String("convert");
     break;
@@ -231,6 +245,62 @@ FILE* GetOutputStream() {
   }
 }
 
+void PrintInteractiveStdinHint() {
+#ifdef _WIN32
+  if (_isatty(_fileno(stdin))) {
+    fprintf(stderr,
+            "Reading from standard input. Press Ctrl+Z then Enter to "
+            "finish.\n");
+  }
+#else
+  if (isatty(fileno(stdin))) {
+    fprintf(stderr,
+            "Reading from standard input. Press Ctrl+D to finish.\n");
+  }
+#endif
+}
+
+void PrintVariationSelectorWarningOnce() {
+  if (variationSelectorWarningShown) {
+    return;
+  }
+  variationSelectorWarningShown = true;
+  fprintf(stderr,
+          "warning: input contains Unicode variation selectors (possible IVS); "
+          "conversion results may be inaccurate.\n");
+}
+
+void WarnIfTextContainsVariationSelector(const char* input, size_t length) {
+  if (variationSelectorWarningShown) {
+    return;
+  }
+  if (UTF8Util::ContainsVariationSelector(input, length)) {
+    PrintVariationSelectorWarningOnce();
+  }
+}
+
+void WarnIfStreamChunkContainsVariationSelector(const char* input,
+                                                size_t length) {
+  if (variationSelectorWarningShown) {
+    return;
+  }
+
+  std::string scan = variationSelectorScanTail;
+  scan.append(input, length);
+  if (UTF8Util::ContainsVariationSelector(scan.data(), scan.size())) {
+    PrintVariationSelectorWarningOnce();
+    variationSelectorScanTail.clear();
+    return;
+  }
+
+  const size_t maxVariationSelectorUtf8Bytes = 4;
+  const size_t keepBytes = scan.size() < maxVariationSelectorUtf8Bytes
+                               ? scan.size()
+                               : maxVariationSelectorUtf8Bytes;
+  variationSelectorScanTail.assign(scan.data() + scan.size() - keepBytes,
+                                   keepBytes);
+}
+
 // Serializes the segmentation-only view of an inspection result as a JSON
 // object with "input" and "segments" fields. Used with --segmentation mode.
 std::string SerializeSegmentationResultJson(
@@ -239,30 +309,31 @@ std::string SerializeSegmentationResultJson(
   rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
   writer.StartObject();
   writer.Key("input");
-  writer.String(result.input.c_str());
+  writer.String(result.input.c_str(), result.input.size());
   writer.Key("segments");
   writer.StartArray();
   for (const auto& seg : result.segments) {
-    writer.String(seg.c_str());
+    writer.String(seg.c_str(), seg.size());
   }
   writer.EndArray();
   writer.EndObject();
   return buffer.GetString();
 }
 
-// Serializes the full inspection result as a JSON object with "input",
-// "segments", "stages", and "output" fields. Used with --inspect mode.
-std::string SerializeInspectionResultJson(
-    const ConversionInspectionResult& result) {
-  rapidjson::StringBuffer buffer;
-  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+// Writes a ConversionInspectionResult as a JSON object into writer.
+// Handles both SingleStageConverter results (segments + stages) and
+// PipelineConverter results (pipelineStages), and is called recursively
+// for nested pipeline stages.
+template <typename Writer>
+void WriteInspectionResultJson(Writer& writer,
+                               const ConversionInspectionResult& result) {
   writer.StartObject();
   writer.Key("input");
-  writer.String(result.input.c_str());
+  writer.String(result.input.c_str(), result.input.size());
   writer.Key("segments");
   writer.StartArray();
   for (const auto& seg : result.segments) {
-    writer.String(seg.c_str());
+    writer.String(seg.c_str(), seg.size());
   }
   writer.EndArray();
   writer.Key("stages");
@@ -274,26 +345,42 @@ std::string SerializeInspectionResultJson(
     writer.Key("segments");
     writer.StartArray();
     for (const auto& seg : stage.segments) {
-      writer.String(seg.c_str());
+      writer.String(seg.c_str(), seg.size());
     }
     writer.EndArray();
     writer.EndObject();
   }
   writer.EndArray();
+  writer.Key("pipelineStages");
+  writer.StartArray();
+  for (const auto& ps : result.pipelineStages) {
+    WriteInspectionResultJson(writer, ps);
+  }
+  writer.EndArray();
   writer.Key("output");
-  writer.String(result.output.c_str());
+  writer.String(result.output.c_str(), result.output.size());
   writer.EndObject();
+}
+
+// Serializes the full inspection result as a JSON object. Used with
+// --inspect mode. Handles both single-stage and pipeline converters.
+std::string SerializeInspectionResultJson(
+    const ConversionInspectionResult& result) {
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  WriteInspectionResultJson(writer, result);
   return buffer.GetString();
 }
 
 std::string ConvertLineByMode(const std::string& line) {
+  WarnIfTextContainsVariationSelector(line.c_str(), line.size());
   const auto convertStart = std::chrono::steady_clock::now();
   std::string output;
   if (outputMode == OutputMode::Segmentation) {
     // True segmentation-only path: call the segmenter directly without
     // running any conversion stage.
     const SegmentsPtr& segments =
-        converter->GetSegmentation()->Segment(line);
+        converter->GetSegmentation()->Segment(std::string_view(line));
     ConversionInspectionResult result;
     result.input = line;
     result.segments = segments->ToVector();
@@ -302,11 +389,185 @@ std::string ConvertLineByMode(const std::string& line) {
     const ConversionInspectionResult& result = converter->Inspect(line);
     output = SerializeInspectionResultJson(result);
   } else {
-    output = converter->Convert(line);
+    output = converter->Convert(std::string_view(line));
   }
   measurement.convertMs += DurationToMilliseconds(
       std::chrono::steady_clock::now() - convertStart);
   return output;
+}
+
+// Writes one define-on-first-use JSONL record. Record kinds:
+//   {"def":"<source>"}            defines the next global source index
+//   {"lit":"<text>"}              literal (unambiguous) output run
+//   {"amb":{"t":"<text>","s":N}}  ambiguous span; N is a global source index
+//   {"end":{...}}                 stream summary
+// Returns the number of bytes written to fout, so callers can account for
+// the actual emitted size (record framing and JSON escaping included).
+//
+// Unlike plain conversion (byte-transparent) and --inspect (human-oriented),
+// this stream is a machine-readable contract, so the writer validates
+// encoding: length-based walking tolerates multi-byte lead bytes with
+// invalid continuation bytes, and without validation such input would flow
+// verbatim into the records and break every strict JSON consumer. A
+// validation failure aborts the stream loudly (no end record, error exit)
+// instead of emitting broken JSON.
+using ValidatingJsonWriter =
+    rapidjson::Writer<rapidjson::StringBuffer, rapidjson::UTF8<>,
+                      rapidjson::UTF8<>, rapidjson::CrtAllocator,
+                      rapidjson::kWriteValidateEncodingFlag>;
+
+size_t WriteAmbiguityChunkRecords(const AmbiguityStream::Chunk& chunk,
+                                  FILE* fout) {
+  rapidjson::StringBuffer buffer;
+  size_t bytesWritten = 0;
+  // fputs() is safe even when the converted text contains NUL bytes (the
+  // no-segmentation walk preserves them): rapidjson escapes control
+  // characters as backslash-u0000 escapes, so the serialized buffer
+  // never holds a raw NUL.  Keep that property in mind before switching
+  // the writer or the emission to anything that does not escape control
+  // characters.
+  auto flushRecord = [&buffer, fout, &bytesWritten]() {
+    fputs(buffer.GetString(), fout);
+    fputc('\n', fout);
+    bytesWritten += buffer.GetSize() + 1;
+    buffer.Clear();
+  };
+  auto writeValidatedString = [](ValidatingJsonWriter& writer,
+                                 const char* data, size_t length) {
+    if (!writer.String(data, length)) {
+      throw Exception(
+          "Converted output contains invalid UTF-8 (from the input or a "
+          "dictionary); --ambiguities emits machine-readable JSON and "
+          "cannot represent it. Aborting record stream.");
+    }
+  };
+  for (const std::string& source : chunk.newSources) {
+    ValidatingJsonWriter writer(buffer);
+    writer.StartObject();
+    writer.Key("def");
+    writeValidatedString(writer, source.c_str(), source.size());
+    writer.EndObject();
+    flushRecord();
+  }
+  size_t consumed = 0;
+  auto writeLiteral = [&](size_t until) {
+    if (until > consumed) {
+      ValidatingJsonWriter writer(buffer);
+      writer.StartObject();
+      writer.Key("lit");
+      writeValidatedString(writer, chunk.output.c_str() + consumed,
+                           until - consumed);
+      writer.EndObject();
+      flushRecord();
+    }
+  };
+  for (const auto& span : chunk.ambiguities) {
+    writeLiteral(span.outputOffset);
+    ValidatingJsonWriter writer(buffer);
+    writer.StartObject();
+    writer.Key("amb");
+    writer.StartObject();
+    writer.Key("t");
+    writeValidatedString(writer, chunk.output.c_str() + span.outputOffset,
+                         span.outputLength);
+    writer.Key("s");
+    writer.Uint64(span.sourceIndex);
+    writer.EndObject();
+    writer.EndObject();
+    flushRecord();
+    consumed = span.outputOffset + span.outputLength;
+  }
+  writeLiteral(chunk.output.size());
+  return bytesWritten;
+}
+
+// Streaming --ambiguities over any input stream (file or stdin): bounded
+// memory regardless of line length or segmentation, emitting
+// define-on-first-use records. This is the only --ambiguities output
+// format, so consumers see one schema no matter how the tool is invoked.
+void ConvertAmbiguitiesStream(FILE* fin, FILE* fout) {
+  const int BUFFER_SIZE = 1024 * 1024;
+  std::string buffer(BUFFER_SIZE, '\0');
+  AmbiguityStream stream(converter);
+  // convertedBytes counts the underlying converted text (reported in the
+  // end record); measurement.outputBytes gets the bytes actually written,
+  // consistent with every other output mode.
+  size_t convertedBytes = 0;
+  size_t ambiguityCount = 0;
+
+  auto emitChunk = [&](const AmbiguityStream::Chunk& chunk) {
+    convertedBytes += chunk.output.size();
+    ambiguityCount += chunk.ambiguities.size();
+    const auto writeStart = std::chrono::steady_clock::now();
+    measurement.outputBytes += WriteAmbiguityChunkRecords(chunk, fout);
+    if (!noFlush) {
+      fflush(fout);
+    }
+    measurement.writeMs += DurationToMilliseconds(
+        std::chrono::steady_clock::now() - writeStart);
+  };
+
+  bool finished = false;
+  bool readError = false;
+  while (!feof(fin)) {
+    size_t length = fread(&buffer[0], sizeof(char), buffer.size(), fin);
+    if (length == 0) {
+      readError = ferror(fin) != 0;
+      break;
+    }
+    measurement.inputBytes += length;
+    WarnIfStreamChunkContainsVariationSelector(buffer.data(), length);
+
+    const auto convertStart = std::chrono::steady_clock::now();
+    const bool isFinalChunk = length < buffer.size() && feof(fin);
+    const AmbiguityStream::Chunk chunk =
+        isFinalChunk ? stream.Finish({buffer.data(), length})
+                     : stream.ConvertChunk({buffer.data(), length});
+    measurement.convertMs += DurationToMilliseconds(
+        std::chrono::steady_clock::now() - convertStart);
+    emitChunk(chunk);
+    if (isFinalChunk) {
+      finished = true;
+      break;
+    }
+  }
+  if (readError) {
+    // Do NOT emit the end record: it is the stream's integrity signal, and
+    // emitting it after a failed read would falsely mark a truncated stream
+    // as complete.  The missing end record plus the error exit tell the
+    // consumer the stream is incomplete.
+    throw Exception("Error reading input stream in --ambiguities mode.");
+  }
+  if (!finished) {
+    const auto convertStart = std::chrono::steady_clock::now();
+    const AmbiguityStream::Chunk chunk = stream.Finish();
+    measurement.convertMs += DurationToMilliseconds(
+        std::chrono::steady_clock::now() - convertStart);
+    emitChunk(chunk);
+  }
+
+  rapidjson::StringBuffer endBuffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(endBuffer);
+  writer.StartObject();
+  writer.Key("end");
+  writer.StartObject();
+  writer.Key("output_bytes");
+  writer.Uint64(convertedBytes);
+  writer.Key("ambiguities");
+  writer.Uint64(ambiguityCount);
+  writer.Key("sources");
+  writer.Uint64(stream.SourceCount());
+  writer.EndObject();
+  writer.EndObject();
+  const auto writeStart = std::chrono::steady_clock::now();
+  fputs(endBuffer.GetString(), fout);
+  fputc('\n', fout);
+  measurement.outputBytes += endBuffer.GetSize() + 1;
+  if (!noFlush) {
+    fflush(fout);
+  }
+  measurement.writeMs += DurationToMilliseconds(
+      std::chrono::steady_clock::now() - writeStart);
 }
 
 void ConvertStream(FILE* fin, FILE* fout) {
@@ -320,12 +581,13 @@ void ConvertStream(FILE* fin, FILE* fout) {
       break;
     }
     measurement.inputBytes += length;
+    WarnIfStreamChunkContainsVariationSelector(buffer.data(), length);
 
     const auto convertStart = std::chrono::steady_clock::now();
     const bool isFinalChunk = length < buffer.size() && feof(fin);
-    const std::string& converted =
-        isFinalChunk ? stream.Finish(buffer.data(), length)
-                     : stream.ConvertChunk(buffer.data(), length);
+    const std::string converted =
+        isFinalChunk ? stream.Finish({buffer.data(), length})
+                     : stream.ConvertChunk({buffer.data(), length});
     measurement.convertMs += DurationToMilliseconds(
         std::chrono::steady_clock::now() - convertStart);
     measurement.outputBytes += converted.size();
@@ -356,18 +618,7 @@ void ConvertStream(FILE* fin, FILE* fout) {
 }
 
 void ConvertLineByLine() {
-#ifdef _WIN32
-  if (_isatty(_fileno(stdin))) {
-    fprintf(stderr,
-            "Reading from standard input. Press Ctrl+Z then Enter to "
-            "finish.\n");
-  }
-#else
-  if (isatty(fileno(stdin))) {
-    fprintf(stderr,
-            "Reading from standard input. Press Ctrl+D to finish.\n");
-  }
-#endif
+  PrintInteractiveStdinHint();
   std::istream& inputStream = std::cin;
   FILE* fout = GetOutputStream();
   bool isFirstLine = true;
@@ -395,10 +646,15 @@ void ConvertLineByLine() {
 
 void ConvertFileStreams(FILE* fin, FILE* fout) {
   try {
-    if (outputMode == OutputMode::Segmentation ||
-        outputMode == OutputMode::Inspect) {
-      // Inspect/segmentation modes process line by line using std::getline to
-      // handle arbitrarily long lines.
+    if (outputMode == OutputMode::Ambiguities) {
+      // Falls through to the shared fclose epilogue below; an early return
+      // here would leak both streams and break --in-place, which replaces
+      // the output file after this function and requires it to be closed.
+      ConvertAmbiguitiesStream(fin, fout);
+    } else if (outputMode == OutputMode::Segmentation ||
+               outputMode == OutputMode::Inspect) {
+      // Inspect/segmentation modes process line by line using
+      // std::getline to handle arbitrarily long lines.
       bool isFirstLine = true;
       std::string line;
       while (ReadLine(fin, &line)) {
@@ -488,9 +744,14 @@ void ConvertFile(std::string fileName) {
 }
 
 void ConvertStdin() {
+  PrintInteractiveStdinHint();
   SetBinaryMode(stdin);
   FILE* fout = GetOutputStream();
-  ConvertStream(stdin, fout);
+  if (outputMode == OutputMode::Ambiguities) {
+    ConvertAmbiguitiesStream(stdin, fout);
+  } else {
+    ConvertStream(stdin, fout);
+  }
   fclose(fout);
 }
 
@@ -501,7 +762,7 @@ int CommandLineMain(std::vector<std::string> args) {
   try {
     const auto totalStart = std::chrono::steady_clock::now();
     TCLAP::CmdLine cmd("Open Chinese Convert (OpenCC) Command Line Tool", ' ',
-                       VERSION);
+                       OPENCC_VERSION);
     OpenCCOutput cmdLineOutput;
     cmd.setOutput(&cmdLineOutput);
 
@@ -538,12 +799,59 @@ int CommandLineMain(std::vector<std::string> args) {
         "Output full inspection result (segmentation + per-stage conversion + "
         "final output) as JSON.",
         cmd, false);
+    TCLAP::SwitchArg ambiguitiesArg(
+        "", "ambiguities",
+        "Convert while streaming JSONL records that mark one-to-many "
+        "(ambiguous) conversion spans.",
+        cmd, false);
+    TCLAP::SwitchArg includeTofuRiskDictionariesArg(
+        "", "include-tofu-risk-dictionaries",
+        "Include dictionaries marked as possibly outputting tofu, i.e. "
+        "Chinese characters that may render as missing-glyph boxes. By "
+        "default, the command line tool skips these dictionaries.",
+        cmd, false);
     const std::string argv0String = args.empty() ? std::string() : args[0];
-    cmd.parse(args);
+    Optional<std::string> resourceZipFileName =
+        Optional<std::string>::Null();
+    std::vector<std::string> visibleArgs;
+    if (!args.empty()) {
+      visibleArgs.push_back(args[0]);
+    }
+    for (size_t i = 1; i < args.size(); i++) {
+      const std::string& arg = args[i];
+      std::string value;
+      if (arg == "--resource-zip") {
+        if (i + 1 >= args.size() || args[i + 1].empty() ||
+            args[i + 1][0] == '-') {
+          std::cerr << "error: Missing value for " << arg << std::endl;
+          return 1;
+        }
+        value = args[++i];
+      } else if (arg.rfind("--resource-zip=", 0) == 0) {
+        value = arg.substr(std::string("--resource-zip=").size());
+      } else {
+        visibleArgs.push_back(arg);
+        continue;
+      }
+      if (value.empty()) {
+        std::cerr << "error: Missing value for " << arg << std::endl;
+        return 1;
+      }
+      if (!resourceZipFileName.IsNull()) {
+        std::cerr << "error: resource zip specified more than once."
+                  << std::endl;
+        return 1;
+      }
+      resourceZipFileName = Optional<std::string>(value);
+    }
+    cmd.parse(visibleArgs);
 
     // Validate mutual exclusion and dependencies
-    if (segmentationArg.getValue() && inspectArg.getValue()) {
-      std::cerr << "error: --segmentation and --inspect are mutually exclusive."
+    if (segmentationArg.getValue() + inspectArg.getValue() +
+            ambiguitiesArg.getValue() >
+        1) {
+      std::cerr << "error: --segmentation, --inspect and --ambiguities are "
+                   "mutually exclusive."
                 << std::endl;
       return 1;
     }
@@ -552,6 +860,8 @@ int CommandLineMain(std::vector<std::string> args) {
       outputMode = OutputMode::Segmentation;
     } else if (inspectArg.getValue()) {
       outputMode = OutputMode::Inspect;
+    } else if (ambiguitiesArg.getValue()) {
+      outputMode = OutputMode::Ambiguities;
     } else {
       outputMode = OutputMode::Convert;
     }
@@ -572,13 +882,37 @@ int CommandLineMain(std::vector<std::string> args) {
     }
     const auto loadStart = std::chrono::steady_clock::now();
     const char* argv0 = argv0String.empty() ? nullptr : argv0String.c_str();
-    converter = config.NewFromFile(configFileName, pathArg.getValue(), argv0);
+    ConfigLoadOptions configOptions;
+    configOptions.includeTofuRiskDictionaries =
+        includeTofuRiskDictionariesArg.getValue();
+    if (!resourceZipFileName.IsNull()) {
+      std::shared_ptr<ResourceProvider> provider(
+          new ZipResourceProvider(resourceZipFileName.Get()));
+      converter = config.NewFromFile(configFileName, provider, configOptions);
+    } else {
+      converter =
+          config.NewFromFile(configFileName, pathArg.getValue(), argv0,
+                             configOptions);
+    }
     measurement.loadMs +=
         DurationToMilliseconds(std::chrono::steady_clock::now() - loadStart);
+    if (outputMode == OutputMode::Segmentation &&
+        converter->GetSegmentation() == nullptr) {
+      std::cerr << "error: this configuration has no segmentation step; "
+                   "--segmentation is not supported.\n";
+      return 1;
+    }
+    if (outputMode == OutputMode::Ambiguities &&
+        converter->GetConversionChain() == nullptr) {
+      std::cerr << "error: this configuration has no single conversion "
+                   "chain; --ambiguities is not supported.\n";
+      return 1;
+    }
     bool lineByLine = inputFileName.IsNull();
     measurement.lineByLine = lineByLine;
     measurement.outputMode = outputMode;
-    if (lineByLine && outputMode == OutputMode::Convert) {
+    if (lineByLine && (outputMode == OutputMode::Convert ||
+                       outputMode == OutputMode::Ambiguities)) {
       ConvertStdin();
     } else if (lineByLine) {
       ConvertLineByLine();

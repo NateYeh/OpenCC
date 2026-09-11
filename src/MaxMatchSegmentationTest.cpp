@@ -43,15 +43,46 @@ TEST_F(MaxMatchSegmentationTest, Segment) {
   EXPECT_EQ(utf8("干燥"), std::string(segments->At(3)));
 }
 
+TEST_F(MaxMatchSegmentationTest, MixedAsciiAndChinese) {
+  // ASCII runs and non-candidate CJK punctuation are skipped in bulk but must
+  // still land in the same segments as the per-character path produced.
+  const auto& segments =
+      segmenter->Segment(utf8("Hello, world! 太后。头发 done"));
+  EXPECT_EQ(5, segments->Length());
+  EXPECT_EQ(utf8("Hello, world! "), std::string(segments->At(0)));
+  EXPECT_EQ(utf8("太后"), std::string(segments->At(1)));
+  EXPECT_EQ(utf8("。"), std::string(segments->At(2)));
+  EXPECT_EQ(utf8("头发"), std::string(segments->At(3)));
+  EXPECT_EQ(utf8(" done"), std::string(segments->At(4)));
+}
+
 TEST_F(MaxMatchSegmentationTest, EmptyString) {
   const auto& segments = segmenter->Segment("");
   EXPECT_EQ(0, segments->Length());
+}
+
+TEST_F(MaxMatchSegmentationTest, StringViewSlice) {
+  const std::string text = utf8("x太后的头发干燥y");
+  const std::string_view slice(text.data() + 1, text.size() - 2);
+  const auto& segments = segmenter->Segment(slice);
+  EXPECT_EQ(4, segments->Length());
+  EXPECT_EQ(utf8("太后"), std::string(segments->At(0)));
+  EXPECT_EQ(utf8("的"), std::string(segments->At(1)));
+  EXPECT_EQ(utf8("头发"), std::string(segments->At(2)));
+  EXPECT_EQ(utf8("干燥"), std::string(segments->At(3)));
 }
 
 TEST_F(MaxMatchSegmentationTest, SingleCharacter) {
   const auto& segments = segmenter->Segment(utf8("一"));
   EXPECT_EQ(1, segments->Length());
   EXPECT_EQ(utf8("一"), std::string(segments->At(0)));
+}
+
+TEST_F(MaxMatchSegmentationTest, PreserveIdeographicDescriptionSequence) {
+  const auto& segments = segmenter->Segment(utf8("⿰钅干干"));
+  EXPECT_EQ(2, segments->Length());
+  EXPECT_EQ(utf8("⿰钅干"), std::string(segments->At(0)));
+  EXPECT_EQ(utf8("干"), std::string(segments->At(1)));
 }
 
 TEST_F(MaxMatchSegmentationTest, TruncatedUtf8Sequence) {

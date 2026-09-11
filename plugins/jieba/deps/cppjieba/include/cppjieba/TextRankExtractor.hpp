@@ -2,11 +2,11 @@
 #define CPPJIEBA_TEXTRANK_EXTRACTOR_H
 
 #include <cmath>
+#include <map>
 #include "Jieba.hpp"
 #include "UnicodeFile.hpp"
 
 namespace cppjieba {
-  using namespace limonp;
   using namespace std;
 
   class TextRankExtractor {
@@ -165,7 +165,7 @@ namespace cppjieba {
   private:
     void LoadStopWordDict(const string& filePath) {
       ifstream ifs;
-      OpenInputFile(filePath, ifs);
+      OpenInputFile(ifs, filePath);
       XCHECK(ifs.is_open()) << "open " << filePath << " failed";
       string line ;
       while (getline(ifs, line)) {

@@ -1,7 +1,12 @@
 name: Build and upload python package to PyPI
 
+# PyPI uploads are irreversible (a version can be yanked but its file names
+# can never be reused), so this workflow runs only when the GitHub release is
+# published, not when the tag is pushed and the release is still a draft.
 on:
-  workflow_dispatch
+  release:
+    types: [published]
+  workflow_dispatch:
 
 jobs:
   release-pypi:
@@ -14,7 +19,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         fetch-depth: 0
     - name: Compute version
@@ -27,7 +32,7 @@ jobs:
         echo "Computed version: $VERSION"
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: "3.12"
 

@@ -2,6 +2,7 @@
 #define CPPJIEBA_KEYWORD_EXTRACTOR_H
 
 #include <algorithm>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include "MixSegment.hpp"
@@ -93,7 +94,7 @@ class KeywordExtractor {
  private:
   void LoadIdfDict(const std::string& idfPath) {
     std::ifstream ifs;
-    OpenInputFile(idfPath, ifs);
+    OpenInputFile(ifs, idfPath);
     XCHECK(ifs.is_open()) << "open " << idfPath << " failed";
     std::string line ;
     std::vector<std::string> buf;
@@ -106,7 +107,7 @@ class KeywordExtractor {
         XLOG(ERROR) << "lineno: " << lineno << " empty. skipped.";
         continue;
       }
-      limonp::Split(line, buf, " ");
+      Split(line, buf, " ");
       if (buf.size() != 2) {
         XLOG(ERROR) << "line: " << line << ", lineno: " << lineno << " empty. skipped.";
         continue;
@@ -123,7 +124,7 @@ class KeywordExtractor {
   }
   void LoadStopWordDict(const std::string& filePath) {
     std::ifstream ifs;
-    OpenInputFile(filePath, ifs);
+    OpenInputFile(ifs, filePath);
     XCHECK(ifs.is_open()) << "open " << filePath << " failed";
     std::string line ;
     while (getline(ifs, line)) {

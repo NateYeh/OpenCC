@@ -11,9 +11,13 @@ npm install opencc
 
 本套件需要 Node.js `>=20.17`。
 
-OpenCC 會隨套件提供原生綁定。當有符合目前平台的預編譯二進位檔時，
-安裝時會自動使用；否則 npm 會從原始碼建置原生 addon，這需要可用的
-C++ 工具鏈，以及 `node-gyp` 支援的 Python。
+OpenCC 以預編譯二進位檔提供原生綁定。安裝時會自動選取符合目前平台的
+`@opencc/opencc-<platform>-<arch>` 套件，涵蓋 macOS（x64/arm64）、
+Linux（x64/arm64）與 Windows（x64）。沒有預編譯二進位套件的平台，
+`npm install` 會以 Bazel 從原始碼構建：編譯 addon 並重新生成字典。
+這需要可用的 C++ 工具鏈與網路；`bazel` 或 `bazelisk` 取自 PATH，
+找不到時會透過 `npx` 自動下載 bazelisk，字典生成腳本所需的 Python
+由 Bazel 自動下載 hermetic 工具鏈，無需系統安裝。
 
 ## 基本用法
 
@@ -70,12 +74,24 @@ converter.convert('漢字', (err, text) => {
 
 ## API
 
-### `new OpenCC(config?)`
+### `new OpenCC(config?, options?)`
 
 建立轉換器。若省略 `config`，OpenCC 會使用 `s2t.json`。
 
 `config` 可以是內建配置檔名稱，例如 `s2t.json`，也可以是自訂
-OpenCC 配置檔的絕對路徑。
+OpenCC 配置檔的絕對路徑，或 OpenCC 配置物件。
+
+`options.includeTofuRiskDictionaries` 控制是否載入標記為可能輸出 tofu
+的字典。這裡的 tofu 指無法顯示的中文字，有時會被渲染為方塊，俗稱
+豆腐塊。為維持 JavaScript API 相容性，預設值為 `true`。
+
+`options.configDirectory` 設定 inline 配置物件中相對字典路徑的基準
+目錄。預設會使用套件內建的 OpenCC assets 目錄。
+
+### `OpenCC.fromConfig(config, options?)`
+
+從 OpenCC 配置物件建立轉換器。這等同於將該物件傳給
+`new OpenCC(config, options)`。
 
 ### `converter.convertSync(input)`
 
@@ -133,12 +149,18 @@ echo '汉字' | opencc -c s2t.json
 -c, --config <file>  配置檔。預設為 s2t.json。
 -i, --input <file>   從 <file> 讀取原文。預設為 stdin。
 -o, --output <file>  將轉換結果寫入 <file>。預設為 stdout。
+--include-tofu-risk-dictionaries
+                     載入可能輸出 tofu 的字典；tofu 指無法顯示時
+                     渲染成方塊的中文字。
 -v, --version        印出 OpenCC 版本。
 -h, --help           印出說明。
 ```
 
-npm CLI 僅支援文字轉換。若需要 inspect、segmentation 輸出、自訂資源
-搜尋路徑，或其他進階 CLI 功能，請使用原生 OpenCC 命令列工具。
+npm CLI 預設會略過標記為可能輸出 tofu 的字典。這裡的 tofu 指無法
+顯示的中文字，有時會被渲染為方塊，俗稱豆腐塊；若要載入，請使用
+`--include-tofu-risk-dictionaries`。npm CLI 僅支援文字轉換。若需要
+inspect、segmentation 輸出、自訂資源搜尋路徑，或其他進階 CLI 功能，
+請使用原生 OpenCC 命令列工具。
 
 ## 內建配置
 
@@ -150,8 +172,8 @@ npm CLI 僅支援文字轉換。若需要 inspect、segmentation 輸出、自訂
 | `tw2s.json` | Traditional Chinese (Taiwan Standard) to Simplified Chinese / 台灣正體到簡體 |
 | `s2hk.json` | Simplified Chinese to Traditional Chinese (Hong Kong variant) / 簡體到香港繁體 |
 | `hk2s.json` | Traditional Chinese (Hong Kong variant) to Simplified Chinese / 香港繁體到簡體 |
-| `s2twp.json` | Simplified Chinese to Traditional Chinese (Taiwan Standard) with Taiwanese idiom / 簡體到台灣正體，並轉換為台灣常用詞彙 |
-| `tw2sp.json` | Traditional Chinese (Taiwan Standard) to Simplified Chinese with Mainland Chinese idiom / 台灣正體到簡體，並轉換為中國大陸常用詞彙 |
+| `s2twp.json` | Simplified Chinese to Traditional Chinese (Taiwan Standard, with Taiwan Phrases) / 簡體到台灣正體（含台灣常用詞彙） |
+| `tw2sp.json` | Traditional Chinese (Taiwan Standard) to Simplified Chinese (Mainland China Phrases) / 台灣正體到簡體（含中國大陸常用詞彙） |
 | `t2tw.json` | Traditional Chinese (OpenCC Standard) to Traditional Chinese (Taiwan Standard) / OpenCC 標準繁體到台灣正體 |
 | `tw2t.json` | Traditional Chinese (Taiwan Standard) to Traditional Chinese (OpenCC Standard) / 台灣正體到 OpenCC 標準繁體 |
 | `t2hk.json` | Traditional Chinese (OpenCC Standard) to Traditional Chinese (Hong Kong variant) / OpenCC 標準繁體到香港繁體 |
@@ -173,6 +195,33 @@ console.log(converter.convertSync('汉字'));
 CLI 的相對配置路徑會從目前工作目錄解析。在 JavaScript API 中，相對
 配置名稱會從套件 assets 目錄解析，因此自訂配置應使用絕對路徑傳入。
 
+也可以直接傳入 OpenCC 配置物件：
+
+```js
+import OpenCC from 'opencc';
+
+const converter = OpenCC.fromConfig({
+  name: 'Custom Inline Config',
+  segmentation: {
+    type: 'mmseg',
+    dict: { type: 'inline', entries: { '鼠标': '鼠标' } },
+  },
+  conversion_chain: [{
+    dict: { type: 'inline', entries: { '鼠标': '滑鼠' } },
+  }],
+});
+
+console.log(converter.convertSync('鼠标坏了'));
+```
+
+若 inline 配置引用相對字典檔，請傳入 `configDirectory`：
+
+```js
+const converter = OpenCC.fromConfig(config, {
+  configDirectory: '/absolute/path/to/opencc-resources',
+});
+```
+
 自訂字典可以透過 `OpenCC.generateDict()` 產生，也可以使用完整 OpenCC
 發行版中的原生 `opencc_dict` 工具。
 
@@ -187,6 +236,9 @@ npm install opencc opencc-jieba
 
 安裝 `opencc-jieba` 後，JavaScript API 與 npm `opencc` CLI 可以自動
 載入其中的配置：
+
+可用的插件配置包含 `s2t_jieba.json`、`s2tw_jieba.json`、
+`s2hk_jieba.json`、`s2twp_jieba.json` 與 `tw2sp_jieba.json`。
 
 ```js
 import OpenCC from 'opencc';

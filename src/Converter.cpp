@@ -16,106 +16,39 @@
  * limitations under the License.
  */
 
-#include <cstring>
-
-#include "ConversionChain.hpp"
-#include "ConversionInspection.hpp"
 #include "Converter.hpp"
-#include "Segments.hpp"
-#include "UTF8Util.hpp"
+#include "StreamWindow.hpp"
 
 using namespace opencc;
 
-std::string Converter::Convert(const std::string& text) const {
-  const SegmentsPtr& segments = segmentation->Segment(text);
-  std::string converted;
-  converted.reserve(text.length() + text.length() / 5);
-  for (const char* segment : *segments) {
-    conversionChain->AppendConvertedSegment(segment, &converted);
+std::string ConverterStream::ConvertChunk(std::string_view input) {
+  if (!input.empty()) {
+    pending.append(input);
   }
-  return converted;
-}
-
-size_t Converter::Convert(const char* input, char* output) const {
-  const std::string& converted = Convert(input);
-  strcpy(output, converted.c_str());
-  return converted.length();
-}
-
-ConversionInspectionResult Converter::Inspect(const std::string& text) const {
-  ConversionInspectionResult result;
-  result.input = text;
-
-  const SegmentsPtr& initialSegments = segmentation->Segment(text);
-  result.segments = initialSegments->ToVector();
-
-  const std::vector<SegmentsPtr> trace =
-      conversionChain->ConvertWithTrace(initialSegments);
-
-  result.stages.reserve(trace.size());
-  for (size_t i = 0; i < trace.size(); i++) {
-    ConversionInspectionStage stage;
-    stage.index = i + 1;
-    stage.segments = trace[i]->ToVector();
-    result.stages.push_back(std::move(stage));
-  }
-
-  if (!trace.empty()) {
-    result.output = trace.back()->ToString();
-  } else {
-    result.output = initialSegments->ToString();
-  }
-
-  return result;
-}
-
-std::string ConverterStream::ConvertChunk(const char* input, size_t length) {
-  if (length > 0) {
-    pending.append(input, length);
-  }
-  if (pending.empty()) {
+  const size_t flushable =
+      internal::FlushableByteCount(pending, maxKeepChars);
+  if (flushable == 0) {
     return std::string();
   }
 
-  const char* bufferBegin = pending.data();
-  const char* bufferEnd = bufferBegin + pending.size();
-  const char* completeEnd = bufferBegin;
-  while (completeEnd < bufferEnd) {
-    const size_t nextCharLen = UTF8Util::NextCharLength(completeEnd);
-    if (completeEnd + nextCharLen > bufferEnd) {
-      break;
-    }
-    completeEnd += nextCharLen;
-  }
-
-  const char* keepStart = completeEnd;
-  size_t charsKept = 0;
-  while (keepStart > bufferBegin && charsKept < maxKeepChars) {
-    const size_t prevCharLen = UTF8Util::PrevCharLength(keepStart);
-    keepStart -= prevCharLen;
-    charsKept++;
-  }
-
-  if (keepStart == bufferBegin) {
-    return std::string();
-  }
-
-  const std::string output = converter->Convert(
-      std::string(bufferBegin, static_cast<size_t>(keepStart - bufferBegin)));
-  pending.erase(0, static_cast<size_t>(keepStart - bufferBegin));
+  const std::string output =
+      converter->Convert(std::string_view(pending.data(), flushable));
+  pending.erase(0, flushable);
   return output;
 }
 
+std::string ConverterStream::Finish(std::string_view input) {
+  if (!input.empty()) {
+    pending.append(input);
+  }
+  return Finish();
+}
+
 std::string ConverterStream::Finish() {
-  const std::string output = pending.empty() ? std::string()
-                                             : converter->Convert(pending);
+  const std::string output =
+      pending.empty() ? std::string()
+                      : converter->Convert(std::string_view(pending));
   pending.clear();
   return output;
 }
 
-std::string ConverterStream::Finish(const char* input, size_t length) {
-  if (length > 0) {
-    pending.append(input, length);
-  }
-  return Finish();
-}

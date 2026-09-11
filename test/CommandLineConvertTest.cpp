@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
@@ -144,6 +145,16 @@ protected:
 #endif
   }
 
+#if defined(BAZEL) && defined(OPENCC_ENABLE_RESOURCE_ZIP_TEST)
+  std::string ResourceZipFile() const {
+    return runfiles_->Rlocation("_main/data/opencc-resources.zip");
+  }
+
+  std::string ResourceOcd2ZipFile() const {
+    return runfiles_->Rlocation("_main/data/opencc-resources-ocd2.zip");
+  }
+#endif
+
   std::string ConfigurationDirectory() const {
 #ifdef BAZEL
     return "";
@@ -205,6 +216,22 @@ protected:
     return system(cmd.c_str());
 #endif
   }
+
+#if defined(BAZEL) && defined(OPENCC_ENABLE_RESOURCE_ZIP_TEST)
+  std::string TestResourceZipCommand(const std::string& config,
+                                     const std::string& inputFile,
+                                     const std::string& outputFile) const {
+    std::string cmd = QuotePath(OpenccCommand()) + " -i " +
+                      QuotePath(inputFile) + " -o " + QuotePath(outputFile) +
+                      " -c " + QuotePath(config + ".json") +
+                      " --resource-zip " + QuotePath(ResourceZipFile());
+#ifdef _WIN32
+    return "\"" + cmd + "\"";
+#else
+    return cmd;
+#endif
+  }
+#endif
 
   std::string TestCommandWithFlags(const std::string& config,
                                    const std::string& inputFile,
@@ -292,7 +319,8 @@ CasesByConfig LoadCases(const std::string& jsonPath) {
   }
 
   rapidjson::Document doc;
-  doc.Parse(content.c_str());
+  doc.Parse<rapidjson::kParseCommentsFlag |
+            rapidjson::kParseTrailingCommasFlag>(content.c_str());
   if (doc.HasParseError() || !doc.IsObject() || !doc.HasMember("cases") ||
       !doc["cases"].IsArray()) {
     throw std::runtime_error("Invalid testcases.json format");
@@ -341,7 +369,11 @@ TEST_F(CommandLineConvertTest, ConvertFromJson) {
       }
     }
 
-    ASSERT_EQ(0, system(TestCommand(config, inputFile, outputFile).c_str()));
+    ASSERT_EQ(0,
+              system(TestCommandWithFlags(
+                         config, inputFile, outputFile,
+                         "--include-tofu-risk-dictionaries")
+                         .c_str()));
 
     // Read outputs and compare line by line.
     std::ifstream ifs(outputFile, std::ios::binary);
@@ -361,6 +393,278 @@ TEST_F(CommandLineConvertTest, ConvertFromJson) {
   }
 }
 
+TEST_F(CommandLineConvertTest, SkipsTofuRiskDictionariesByDefault) {
+  const std::string inputFile = InputFile("tofu_risk_default");
+  const std::string outputFile = OutputFile("tofu_risk_default");
+
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << "㑮";
+  }
+
+  ASSERT_EQ(0, system(TestCommand("t2s", inputFile, outputFile).c_str()));
+  EXPECT_EQ("㑮", GetFileContents(outputFile));
+}
+
+TEST_F(CommandLineConvertTest, IncludeTofuRiskDictionariesFlagRestoresLegacy) {
+  const std::string inputFile = InputFile("tofu_risk_include");
+  const std::string outputFile = OutputFile("tofu_risk_include");
+
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << "㑮";
+  }
+
+  ASSERT_EQ(0, system(TestCommandWithFlags(
+                   "t2s", inputFile, outputFile,
+                   "--include-tofu-risk-dictionaries")
+                   .c_str()));
+  EXPECT_EQ("𫝈", GetFileContents(outputFile));
+}
+
+#if defined(BAZEL) && defined(OPENCC_ENABLE_RESOURCE_ZIP_TEST)
+TEST_F(CommandLineConvertTest, ResourceZipConvertsWithoutResourcePaths) {
+  const std::string inputFile = InputFile("resource_zip");
+  const std::string outputFile = OutputFile("resource_zip");
+
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << "打印机和鼠标";
+  }
+
+  ASSERT_EQ(0,
+            RunCommand(TestResourceZipCommand("s2twp", inputFile, outputFile)));
+  EXPECT_EQ("印表機和滑鼠", GetFileContents(outputFile));
+}
+
+TEST_F(CommandLineConvertTest, ResourceOcd2ZipConvertsWithoutResourcePaths) {
+  const std::string inputFile = InputFile("resource_ocd2_zip");
+  const std::string outputFile = OutputFile("resource_ocd2_zip");
+
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << "打印机和鼠标";
+  }
+
+  std::string cmd = QuotePath(OpenccCommand()) + " -i " +
+                    QuotePath(inputFile) + " -o " + QuotePath(outputFile) +
+                    " -c s2twp.json" +
+                    " --resource-zip " + QuotePath(ResourceOcd2ZipFile());
+#ifdef _WIN32
+  cmd = "\"" + cmd + "\"";
+#endif
+
+  ASSERT_EQ(0, RunCommand(cmd));
+  EXPECT_EQ("印表機和滑鼠", GetFileContents(outputFile));
+}
+#endif
+
+TEST_F(CommandLineConvertTest, AmbiguitiesEmitsDefineOnFirstUseRecords) {
+  const std::string inputFile = InputFile("ambiguities_records");
+  const std::string recordsFile = OutputFile("ambiguities_records");
+  const std::string convertFile = OutputFile("ambiguities_convert");
+
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    // 文丑 (STPhrases 文丑 -> 文丑 文醜) appears twice so the second
+    // reference must reuse the first definition; 头发/干燥 are single-value
+    // phrase conversions and must not be flagged.
+    ofs << "文丑与文丑相争，头发干燥";
+  }
+
+  ASSERT_EQ(0, system(TestCommand("s2t", inputFile, convertFile).c_str()));
+  ASSERT_EQ(0, system(TestCommandWithFlags("s2t", inputFile, recordsFile,
+                                           "--ambiguities")
+                          .c_str()));
+
+  std::istringstream records(GetFileContents(recordsFile));
+  std::string line;
+  std::string reconstructed;
+  std::vector<std::string> defs;
+  std::vector<uint64_t> ambIndexes;
+  bool sawEnd = false;
+  while (std::getline(records, line)) {
+    if (line.empty()) {
+      continue;
+    }
+    ASSERT_FALSE(sawEnd) << "record after end record: " << line;
+    rapidjson::Document doc;
+    doc.Parse(line.c_str());
+    ASSERT_FALSE(doc.HasParseError()) << line;
+    ASSERT_TRUE(doc.IsObject()) << line;
+    if (doc.HasMember("def")) {
+      ASSERT_TRUE(doc["def"].IsString());
+      defs.push_back(doc["def"].GetString());
+    } else if (doc.HasMember("lit")) {
+      ASSERT_TRUE(doc["lit"].IsString());
+      reconstructed += doc["lit"].GetString();
+    } else if (doc.HasMember("amb")) {
+      ASSERT_TRUE(doc["amb"].IsObject());
+      ASSERT_TRUE(doc["amb"].HasMember("t") && doc["amb"]["t"].IsString())
+          << line;
+      ASSERT_TRUE(doc["amb"].HasMember("s") && doc["amb"]["s"].IsUint64())
+          << line;
+      // Define-on-first-use contract: every reference points at an
+      // already-defined source index.
+      ASSERT_LT(doc["amb"]["s"].GetUint64(), defs.size()) << line;
+      reconstructed += doc["amb"]["t"].GetString();
+      ambIndexes.push_back(doc["amb"]["s"].GetUint64());
+    } else if (doc.HasMember("end")) {
+      sawEnd = true;
+      EXPECT_EQ(reconstructed.size(),
+                doc["end"]["output_bytes"].GetUint64());
+      EXPECT_EQ(ambIndexes.size(), doc["end"]["ambiguities"].GetUint64());
+      EXPECT_EQ(defs.size(), doc["end"]["sources"].GetUint64());
+    } else {
+      FAIL() << "unknown record: " << line;
+    }
+  }
+  EXPECT_TRUE(sawEnd);
+  // Interleaved records reconstruct exactly the plain conversion output.
+  EXPECT_EQ(GetFileContents(convertFile), reconstructed);
+  // 文丑 appears twice in the input: dedup means exactly one def, and both
+  // occurrences reference it.  Invariant-style, so unrelated dictionary
+  // updates cannot break this test.
+  ASSERT_EQ(1, std::count(defs.begin(), defs.end(), "文丑"));
+  const uint64_t wenchouIndex = static_cast<uint64_t>(
+      std::find(defs.begin(), defs.end(), "文丑") - defs.begin());
+  EXPECT_GE(std::count(ambIndexes.begin(), ambIndexes.end(), wenchouIndex),
+            2);
+}
+
+TEST_F(CommandLineConvertTest, AmbiguitiesCoversMultiStageChain) {
+  const std::string inputFile = InputFile("ambiguities_s2twp");
+  const std::string recordsFile = OutputFile("ambiguities_s2twp");
+  const std::string convertFile = OutputFile("ambiguities_s2twp_convert");
+
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    // s2twp is a multi-stage chain: 下面 is one-to-many in stage one
+    // (STPhrases 下面 -> 下面 下麪) while 信号 becomes one-to-many in the
+    // regional stage (TWPhrases 信號 -> 訊號 信號), so its span must map
+    // back through the stage alignment to the Simplified input slice.
+    // 软件 converts unambiguously (軟件 -> 軟體) and must not be flagged.
+    ofs << "下面是软件的信号";
+  }
+
+  ASSERT_EQ(0, system(TestCommand("s2twp", inputFile, convertFile).c_str()));
+  ASSERT_EQ(0, system(TestCommandWithFlags("s2twp", inputFile, recordsFile,
+                                           "--ambiguities")
+                          .c_str()));
+
+  std::istringstream records(GetFileContents(recordsFile));
+  std::string line;
+  std::string reconstructed;
+  std::vector<std::string> defs;
+  std::vector<std::string> ambSources;
+  while (std::getline(records, line)) {
+    if (line.empty()) {
+      continue;
+    }
+    rapidjson::Document doc;
+    doc.Parse(line.c_str());
+    ASSERT_FALSE(doc.HasParseError()) << line;
+    if (doc.HasMember("def")) {
+      defs.push_back(doc["def"].GetString());
+    } else if (doc.HasMember("lit")) {
+      reconstructed += doc["lit"].GetString();
+    } else if (doc.HasMember("amb")) {
+      const size_t index = doc["amb"]["s"].GetUint64();
+      ASSERT_LT(index, defs.size()) << line;
+      ambSources.push_back(defs[index]);
+      reconstructed += doc["amb"]["t"].GetString();
+    }
+  }
+  EXPECT_EQ(GetFileContents(convertFile), reconstructed);
+  // Contains-style assertions so unrelated dictionary updates (new
+  // multi-value entries elsewhere in the sentence) cannot break the test.
+  EXPECT_NE(defs.end(), std::find(defs.begin(), defs.end(), "下面"));
+  EXPECT_NE(defs.end(), std::find(defs.begin(), defs.end(), "信号"));
+  EXPECT_NE(ambSources.end(),
+            std::find(ambSources.begin(), ambSources.end(), "下面"));
+  EXPECT_NE(ambSources.end(),
+            std::find(ambSources.begin(), ambSources.end(), "信号"));
+}
+
+TEST_F(CommandLineConvertTest, AmbiguitiesRejectsInvalidUtf8) {
+  // Length-based walking tolerates a multi-byte lead byte with invalid
+  // continuation bytes; the record writer validates encoding so such input
+  // aborts the stream (non-zero exit, no end record) instead of emitting
+  // JSON that strict consumers reject. Plain conversion stays
+  // byte-transparent and is unaffected.
+  const std::string inputFile = InputFile("ambiguities_invalid_utf8");
+  const std::string recordsFile = OutputFile("ambiguities_invalid_utf8");
+  const std::string convertFile = OutputFile("ambiguities_invalid_utf8_conv");
+
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << "abc\xE4\x41\x41zzz";
+  }
+
+  // The same input converts fine in byte-transparent convert mode, pinning
+  // the failure below to the record writer's encoding validation rather
+  // than some earlier stage.
+  ASSERT_EQ(0, RunCommand(TestCommand("s2t", inputFile, convertFile)));
+  ASSERT_NE(0, RunCommand(TestCommandWithFlags("s2t", inputFile, recordsFile,
+                                               "--ambiguities")));
+  EXPECT_EQ(std::string::npos, GetFileContents(recordsFile).find("\"end\""));
+}
+
+TEST_F(CommandLineConvertTest, AmbiguitiesInPlaceInvalidUtf8KeepsOriginal) {
+  // The record writer throws on invalid UTF-8; with --in-place the
+  // exception must abort before the temp-file replacement so the user's
+  // original file survives intact, and the temp file must be cleaned up.
+  // A dedicated directory makes the no-residue assertion exact.
+  const fs::path dir =
+      fs::u8path(OutputDirectory()) / fs::u8path("ambiguities_inplace_bad");
+  fs::create_directories(dir);
+  const fs::path file = dir / fs::u8path("input.txt");
+  const std::string original = "abc\xE4\x41\x41zzz";
+
+  {
+    std::ofstream ofs(file, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << original;
+  }
+
+  ASSERT_NE(0, RunCommand(TestCommand("s2t", file.u8string(),
+                                      file.u8string(), "",
+                                      "--ambiguities --in-place")));
+  EXPECT_EQ(original, GetFileContents(file));
+  size_t entries = 0;
+  for (const auto& entry : fs::directory_iterator(dir)) {
+    (void)entry;
+    entries++;
+  }
+  EXPECT_EQ(1u, entries) << "temporary file left behind";
+}
+
+TEST_F(CommandLineConvertTest, AmbiguitiesInPlaceRewritesFile) {
+  // Regression: the --ambiguities branch used to early-return from
+  // ConvertFileStreams, skipping the fclose epilogue; --in-place then
+  // replaced the output file while both streams were still open (fails on
+  // Windows, risks unflushed data elsewhere).
+  const std::string file = OutputFile("ambiguities_inplace");
+  {
+    std::ofstream ofs(file, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << "文丑";
+  }
+
+  ASSERT_EQ(0, RunCommand(
+                   TestCommand("s2t", file, file, "", "--ambiguities --in-place")));
+  const std::string contents = GetFileContents(file);
+  EXPECT_NE(std::string::npos, contents.find("{\"def\":\"文丑\"}")) << contents;
+  EXPECT_NE(std::string::npos, contents.find("\"end\"")) << contents;
+}
+
 TEST_F(CommandLineConvertTest, StdinPreservesLineEndingsAndUnknownCharacters) {
   const std::string config = "s2t";
   const std::string inputFile = InputFile("stdin_line_endings");
@@ -375,6 +679,59 @@ TEST_F(CommandLineConvertTest, StdinPreservesLineEndingsAndUnknownCharacters) {
   ASSERT_EQ(0, system(TestStdinCommand(config, inputFile, outputFile).c_str()));
   EXPECT_EQ("鼠標=mouse\r\n123\n未登錄", GetFileContents(outputFile));
 }
+
+#ifndef _WIN32
+TEST_F(CommandLineConvertTest, WarnsWhenInputContainsVariationSelector) {
+  const std::string inputFile = InputFile("ivs_warning");
+  const std::string outputFile = OutputFile("ivs_warning");
+  const std::string stderrFile = OutputFile("ivs_warning.stderr");
+  const std::string variationSelector = "\xF3\xA0\x84\x80";
+
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << "汉禰" << variationSelector;
+  }
+
+  const std::string command =
+      TestCommand("s2t", inputFile, outputFile) + " 2> " +
+      QuotePath(stderrFile);
+  ASSERT_EQ(0, system(command.c_str()));
+  EXPECT_EQ("漢禰" + variationSelector, GetFileContents(outputFile));
+  EXPECT_NE(std::string::npos,
+            GetFileContents(stderrFile).find(
+                "warning: input contains Unicode variation selectors"));
+}
+
+TEST_F(CommandLineConvertTest,
+       WarnsWhenSupplementaryVariationSelectorCrossesChunkBoundary) {
+  const std::string inputFile = InputFile("ivs_warning_chunk_boundary");
+  const std::string outputFile = OutputFile("ivs_warning_chunk_boundary");
+  const std::string stderrFile =
+      OutputFile("ivs_warning_chunk_boundary.stderr");
+
+  std::string input(1048576 - 1, 'a');
+  input.push_back(static_cast<char>(0xF3));
+  input.push_back(static_cast<char>(0xA0));
+  input.push_back(static_cast<char>(0x84));
+  input.push_back(static_cast<char>(0x80));
+
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << input;
+  }
+
+  const std::string command =
+      TestCommand("s2t", inputFile, outputFile) + " 2> " +
+      QuotePath(stderrFile);
+  ASSERT_EQ(0, system(command.c_str()));
+  EXPECT_EQ(input, GetFileContents(outputFile));
+  EXPECT_NE(std::string::npos,
+            GetFileContents(stderrFile).find(
+                "warning: input contains Unicode variation selectors"));
+}
+#endif
 
 #ifndef _WIN32
 TEST_F(CommandLineConvertTest, PipeShortReadContinuesUntilEof) {
@@ -613,7 +970,7 @@ TEST_F(CommandLineConvertTest, WritesMeasuredResultJson) {
 }
 
 TEST_F(CommandLineConvertTest, SegmentationOutputIsJson) {
-  const std::string config = "s2t";
+  const std::string config = "s2twp";
   const std::string inputFile = InputFile("segmentation_test");
   const std::string outputFile = OutputFile("segmentation_test");
 
@@ -701,6 +1058,20 @@ TEST_F(CommandLineConvertTest, SegmentationAndInspectAreMutuallyExclusive) {
   EXPECT_NE(0, exitCode);
 }
 
+TEST_F(CommandLineConvertTest, SegmentationFailsWhenConfigHasNoSegmentation) {
+  // s2t has no segmentation step; --segmentation should exit non-zero.
+  const std::string config = "s2t";
+  const std::string inputFile = InputFile("seg_no_seg_test");
+  const std::string outputFile = OutputFile("seg_no_seg_test");
+  {
+    std::ofstream ofs(inputFile, std::ios::binary);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << "开放中文转换\n";
+  }
+  EXPECT_NE(0, system(TestCommandWithFlags(config, inputFile, outputFile,
+                                           "--segmentation").c_str()));
+}
+
 TEST_F(CommandLineConvertTest, MeasuredResultIncludesOutputMode) {
   const std::string config = "s2t";
   const std::string inputFile = InputFile("inspect_measured_test");
@@ -737,7 +1108,7 @@ TEST_F(CommandLineConvertTest, MeasuredResultIncludesOutputMode) {
 // tokens; none of those tokens should already be Traditional Chinese unless
 // the conversion chain ran.
 TEST_F(CommandLineConvertTest, SegmentationDoesNotRunConversionChain) {
-  const std::string config = "s2t";
+  const std::string config = "s2twp";
   const std::string inputFile = InputFile("seg_no_convert_test");
   const std::string outputFile = OutputFile("seg_no_convert_test");
 
@@ -781,7 +1152,7 @@ TEST_F(CommandLineConvertTest, SegmentationDoesNotRunConversionChain) {
 // Verify that a multi-line input in --segmentation mode produces exactly one
 // JSON object per input line with no spurious extra record at EOF.
 TEST_F(CommandLineConvertTest, SegmentationNoSpuriousEofRecord) {
-  const std::string config = "s2t";
+  const std::string config = "s2twp";
   const std::string inputFile = InputFile("seg_eof_test");
   const std::string outputFile = OutputFile("seg_eof_test");
 

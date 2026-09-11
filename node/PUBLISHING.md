@@ -1,75 +1,189 @@
 # Publishing Guide
 
-This document describes how to prepare and publish the OpenCC Node.js bindings.
+This document describes how to prepare and publish the OpenCC Node.js package
+family.
+
+The current npm layout is split by platform:
+
+- `opencc` contains the JavaScript API, CLI, TypeScript declarations, and
+  runtime dictionary/config assets.
+- `@opencc/opencc-<platform>-<arch>` contains exactly one native
+  `opencc.node` binary for one platform.
+
+The native addon normally comes from the scoped binary packages. On platforms
+without one, `npm install` falls back to a full Bazel source build
+(`scripts/install.js`): it compiles the addon, regenerates the dictionaries,
+and refreshes `prebuilds/assets`. The tarball ships the Bazel workspace, the
+C++ sources, and the dictionary sources for this; prebuilt assets are still
+included for the scoped-package fast path.
+
+## Package names
+
+The main package declares these scoped packages as optional dependencies:
+
+```text
+opencc
+@opencc/opencc-darwin-arm64
+@opencc/opencc-linux-arm64
+@opencc/opencc-linux-x64
+@opencc/opencc-win32-x64
+```
+
+The main package can either point at newly built scoped binary package versions
+or reuse already published compatible binary package versions. For a full native
+binary refresh, publish all scoped packages at the same version as `opencc`.
 
 ## Prerequisites
-- **Platform Assumption**: This guide assumes the publishing process is executed on an **ARM64 Mac** computer. `darwin-arm64` generation uses local compilation, while Linux `x64` / `arm64` generation uses BuildBuddy remote runners.
-- Make sure you have BuildBuddy (or another Bazel remote execution environment) configured in your local `~/.bazelrc` for cross-compiling Linux binaries.
 
-## Publishing Steps
+- npm account access to publish `opencc`.
+- npm organization access to publish public packages under `@opencc`.
+- Node.js, npm, Python, Bazel (bazelisk), and a native C++ build toolchain
+  for the target platform.
+- GitHub Actions or another set of machines covering each supported target
+  platform.
 
-1. **Install Dependencies**
-   ```bash
-   npm install
-   ```
+At the moment, maintainers are assumed to run the full multi-platform release
+process through GitHub Actions. A local machine can still build and publish the
+scoped package for its own platform.
 
-2. **Generate Prebuilds**
-   Run the following command on macOS to generate all cross-platform native addons:
-   ```bash
-   npm run prebuild:all
-   ```
-   This script will automatically:
-   - Build macOS native addons locally using `prebuildify`. (Note: This only generates the binary for the host's current architecture, e.g., `darwin-arm64` on Apple Silicon. Currently, no Windows prebuilds are generated).
-   - Trigger the Bazel build script (`scripts/build-node-prebuild-bazel.sh`) to remotely cross-compile Linux native addons (`linux-x64` and `linux-arm64`) with `-c opt` for optimized, stripped binaries.
-   - Collect all generated `.node` files into the `prebuilds/` directory.
+## Build
 
-3. **Run Tests**
-   Verify that the bindings work correctly:
-   ```bash
-   npm test
-   ```
+From the repository root, build the scoped binary for the current platform with
+Bazel:
 
-4. **Publish**
-   Finally, publish the package to npm:
-   ```bash
-   npm publish
-   ```
+```sh
+npm install --omit=optional --ignore-scripts
+./scripts/build-node-prebuild-bazel.sh
+```
 
----
+The script defaults to the host platform; pass an explicit target such as
+`win32-x64` for the Bazel + Zig cross-compile path.
 
-# 發佈指南
+This creates:
 
-這份文件說明了如何準備與發佈 OpenCC 的 Node.js 綁定。
+```text
+prebuilds/assets/*.json
+prebuilds/assets/*.ocd2
+prebuilds/<current-platform>-<current-arch>/opencc.node
+```
 
-## 前置作業
-- **平臺假設**：本指南假定發佈過程在一個 **ARM64 Mac 计算机**上執行。`darwin-arm64` 生成使用本機編譯；Linux `x64` / `arm64` 使用 BuildBuddy 遠程 runner 生成。
-- 請確保您的本地環境（如 `~/.bazelrc`）已設定好 BuildBuddy 或其他的 Bazel 遠端執行環境，以便跨平臺編譯 Linux 二進位檔案。
+The release workflow (`release-npm-binaries`) runs the Bazel build script
+separately on the runner for each scoped binary target. All Node builds use
+Bazel exclusively — including the install-time source-build fallback, which
+replaced the former `binding.gyp`/node-gyp build.
 
-## 發佈步驟
+## Prepare scoped binary packages
 
-1. **安裝依賴**
-   ```bash
-   npm install
-   ```
+After the `prebuilds/` tree exists, generate publishable scoped package
+directories:
 
-2. **生成預編譯二進位檔 (Prebuilds)**
-   請在 macOS 上執行以下指令，以生成所有跨平臺的原生模組：
-   ```bash
-   npm run prebuild:all
-   ```
-   這個指令會自動執行以下操作：
-   - 使用 `prebuildify` 在本地編譯 macOS 的原生模組。（註：此步驟僅會生成與當前主機相同架構的二進位檔，例如 Apple Silicon 機器只會生成 `darwin-arm64`。目前尚未提供 Windows 平台的 prebuilds）。
-   - 觸發 Bazel 腳本（`scripts/build-node-prebuild-bazel.sh`），透過遠端編譯產生經過優化與剔除除錯符號（`-c opt`）的 Linux 原生模組（包含 `linux-x64` 與 `linux-arm64`）。
-   - 將所有編譯好的 `.node` 檔案統一收集至 `prebuilds/` 目錄中。
+```sh
+npm run prepare:scoped-packages
+```
 
-3. **執行測試**
-   確認模組運作正常：
-   ```bash
-   npm test
-   ```
+This writes packages under:
 
-4. **發佈至 npm**
-   最後，將套件發佈至 npm 暫存庫：
-   ```bash
-   npm publish
-   ```
+```text
+dist/scoped-packages/@opencc/opencc-darwin-arm64
+dist/scoped-packages/@opencc/opencc-linux-arm64
+dist/scoped-packages/@opencc/opencc-linux-x64
+dist/scoped-packages/@opencc/opencc-win32-x64
+```
+
+Each generated package contains only:
+
+```text
+index.js
+package.json
+README.md
+prebuilds/<platform>-<arch>/opencc.node
+```
+
+## Verify package contents
+
+Dry-run the main package:
+
+```sh
+npm pack --dry-run
+```
+
+The main package tarball should contain the JavaScript API and CLI under
+`node/`, the TypeScript declarations, `prebuilds/assets/`, and the Bazel
+workspace plus the `src/` C++ sources and `data/` dictionary sources for the
+install-time source build, but not `prebuilds/<platform>/opencc.node`.
+
+Dry-run each scoped package:
+
+```sh
+npm pack --dry-run dist/scoped-packages/@opencc/opencc-darwin-arm64
+npm pack --dry-run dist/scoped-packages/@opencc/opencc-linux-arm64
+npm pack --dry-run dist/scoped-packages/@opencc/opencc-linux-x64
+npm pack --dry-run dist/scoped-packages/@opencc/opencc-win32-x64
+```
+
+Each scoped tarball should contain one `opencc.node` binary for its own
+platform plus a short package-specific README.
+
+## Publish order
+
+Publish the scoped binary packages first. The main package depends on them via
+`optionalDependencies`, so they should already exist by the time users install
+the main package.
+
+For a prerelease version such as `1.3.2-next1`, use the `next` dist-tag:
+
+```sh
+npm publish dist/scoped-packages/@opencc/opencc-darwin-arm64 --access public --tag next
+npm publish dist/scoped-packages/@opencc/opencc-linux-arm64 --access public --tag next
+npm publish dist/scoped-packages/@opencc/opencc-linux-x64 --access public --tag next
+npm publish dist/scoped-packages/@opencc/opencc-win32-x64 --access public --tag next
+npm publish --tag next
+```
+
+For a stable release, use `latest` or omit `--tag`:
+
+```sh
+npm publish dist/scoped-packages/@opencc/opencc-darwin-arm64 --access public
+npm publish dist/scoped-packages/@opencc/opencc-linux-arm64 --access public
+npm publish dist/scoped-packages/@opencc/opencc-linux-x64 --access public
+npm publish dist/scoped-packages/@opencc/opencc-win32-x64 --access public
+npm publish
+```
+
+`--access public` is required for the first publish of scoped public packages.
+It is harmless to keep using it for later publishes.
+
+The final `npm publish` command runs `prepublishOnly`, which verifies that the
+scoped binary package versions declared in `optionalDependencies` have already
+been published.
+
+## Install-test after publishing
+
+Use a temporary directory and install from npm:
+
+```sh
+mkdir /tmp/opencc-install-test
+cd /tmp/opencc-install-test
+npm init -y
+npm install opencc@1.3.2-next1 --tag next
+node -e "const OpenCC = require('opencc'); const cc = new OpenCC('s2twp'); console.log(cc.convertSync('鼠标里面的硅二极管坏了'));"
+```
+
+The install should pull exactly one matching `@opencc/opencc-<platform>-<arch>`
+optional package for the current machine. If no scoped binary package is
+available, the install script builds from source with Bazel: it compiles the
+addon, stages it under `prebuilds/<platform>-<arch>/`, and regenerates the
+dictionaries into `prebuilds/assets`.
+
+## CI shape
+
+The CI release flow is:
+
+1. `release-npm-binaries` (workflow_dispatch) builds each scoped binary
+   package on its matching platform or runner and publishes them.
+2. Pushing a `ver.*` tag creates the draft GitHub release.
+3. Publishing the release triggers `release-npm`, which packs and publishes
+   the main `opencc` package after verifying the scoped packages exist.
+
+The local flow above remains available for building and publishing a single
+platform by hand.

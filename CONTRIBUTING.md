@@ -15,8 +15,11 @@ OpenCC 以 [Apache License 2.0](LICENSE) 釋出。提交 Pull Request、issue/co
 - [撰寫測試案例](#撰寫測試案例)
 - [Jieba 插件測試](#jieba-插件測試)
 - [簡轉繁轉換的特殊注意事項](#簡轉繁轉換的特殊注意事項)
+- [字級規則與詞表依賴](#字級規則與詞表依賴)
 
 ## 新增詞典條目
+
+新增地區慣用詞前，請先閱讀 [OpenCC 地區詞收錄標準](doc/regional-phrase-criteria.md)。該標準說明哪些地區詞適合收錄、需要提供哪些依據，以及應如何避免高風險誤轉換。
 
 ### 1. 選擇正確的詞典檔案
 
@@ -30,16 +33,18 @@ OpenCC 以 [Apache License 2.0](LICENSE) 釋出。提交 Pull Request、issue/co
 
 - **臺灣正體用詞**
   - `TWVariants.txt` - 臺灣異體字
+  - `TWVariantsPhrases.txt` - 轉入臺灣字形（如 `s2tw`、`s2twp`、`t2tw`）時使用的臺灣異體字詞組例外
+  - `TWVariantsRevPhrases.txt` - 從臺灣字形轉出（如 `tw2s`、`tw2sp`、`tw2t`）時使用的臺灣異體字詞組例外
   - `TWPhrases.txt` - 臺灣慣用詞
 
 - **香港繁體用詞**
   - `HKVariants.txt` - 香港異體字
-  - `HKVariantsRevPhrases.txt` - 香港異體字反向詞組
+  - `HKVariantsPhrases.txt` - 轉入香港字形（如 `s2hk`、`t2hk`）時使用的香港異體字詞組例外
+  - `HKVariantsRevPhrases.txt` - 從香港字形轉出（如 `hk2s`、`hk2t`）時使用的香港異體字詞組例外
 
-- **日文新舊字形**
-  - `JPShinjitaiCharacters.txt` - 日文新字體（單字）
-  - `JPShinjitaiPhrases.txt` - 日文新字體（詞組）
-  - `JPVariants.txt` - 日文異體字
+- **日文新舊字形**（僅供探索性研究，不建議用於生產環境）
+  - `JPShinjitaiCharacters.txt` - 日文新舊字體對照（單字）
+  - `JPShinjitaiPhrases.txt` - 日文新字體到舊字體（詞組，亦包含少量和製漢語詞匯轉換）
 
 ### 2. 詞典格式規範
 
@@ -68,6 +73,21 @@ OpenCC 以 [Apache License 2.0](LICENSE) 釋出。提交 Pull Request、issue/co
 1. 使用 **Tab 字元**（`\t`）分隔來源詞與目標詞
 2. 每行一個條目
 3. 檔案使用 UTF-8 編碼
+
+### 4. 檢查字級規則與詞表依賴
+
+詞組級詞表如果仍保留逐字的 `A -> B` 轉換，對應的字級詞表也必須顯式
+保留 `A` 的 `B` 候選。若一般情況下不應再把 `A` 預設轉為 `B`，請不要
+直接刪除字級關係；應改為非預設候選，例如 `A<TAB>A B`。這樣單字預設
+仍保留為 `A`，但詞表中的 `A -> B` 依賴不會變成隱式規則。
+
+修改 `STCharacters.txt`、`TSCharacters.txt`、`TWVariants.txt`、
+`HKVariants.txt` 或其對應詞組詞表時，請同步檢查詞組中逐字對齊的
+替換是否仍在字表候選中。可執行以下測試檢查這類字級依賴：
+
+```bash
+bazel test //data/dictionary:dictionary_phrase_character_dependency_test
+```
 
 ## 排序詞典
 
@@ -172,17 +192,19 @@ ctest --test-dir build --output-on-failure
 
 ### Node.js 測試
 
-Node.js binding 與 npm CLI 修改請執行：
+Node.js binding 與 npm CLI 修改請執行（addon 以 Bazel 構建）：
 
 ```bash
-npm install
+npm install --omit=optional
+./scripts/build-node-prebuild-bazel.sh
 npm test
 ```
 
-驗證 npm prebuild 佈局時：
+`build-node-prebuild-bazel.sh` 會產生 `prebuilds/<platform>-<arch>/opencc.node`
+與共用資源 `prebuilds/assets/`，與 npm 發佈使用的佈局一致。如需確保測試只使用
+prebuild 佈局（忽略本地 `build/Release`）：
 
 ```bash
-npm run prebuild
 PREBUILDS_ONLY=1 npm test
 ```
 
@@ -233,6 +255,53 @@ PREBUILDS_ONLY=1 npm test
   - 僅需包含您要測試的轉換配置
   - 可以同時測試多種配置
 
+### 使用腳本生成測試案例
+
+專案提供 `scripts/add_testcase.py`，可根據目前建置出的 OpenCC 與詞典，自動為
+`test/testcases/testcases.json` 生成一筆測試案例。此工具適合在已完成詞典修改後，
+快速補齊多個常用配置的 `expected` 輸出；提交前仍需人工檢查輸出是否符合預期。
+
+基本用法：
+
+```bash
+python3 scripts/add_testcase.py \
+  --kind Issue \
+  --number 1234 \
+  --brief-description taiwan_regional_phrase \
+  --input "这个软件里有一套软体动物的数据库"
+```
+
+腳本預設會先執行 Bazel build，然後使用 `bazel-bin/src/tools/command_line` 與
+建置出的詞典生成結果。測試案例 ID 會組成類似
+`BYVoid_OpenCC_Issue_1234_taiwan_regional_phrase` 的格式。
+
+常用參數：
+
+- `--kind`：來源類型，使用 `Issue` 或 `PR`
+- `--number`：issue 或 PR 編號
+- `--brief-description`：英文簡短描述，會作為測試案例 ID 的後綴
+- `--input`：測試輸入文字
+- `--dry-run`：只輸出將生成的 JSON，不寫入檔案
+- `--replace`：若同 ID 測試案例已存在，覆蓋原案例
+- `--no-build`：跳過 Bazel build，直接使用既有 build artifacts
+- `--opencc`、`--config-dir`、`--dict-dir`、`--testcases`：指定自訂執行檔、配置目錄、
+  詞典目錄或測試案例檔案
+
+例如先預覽生成內容：
+
+```bash
+python3 scripts/add_testcase.py \
+  --kind PR \
+  --number 5678 \
+  --brief-description hk_variant_phrase \
+  --input "测试文字" \
+  --dry-run
+```
+
+此腳本目前生成以下配置的結果：`s2t`、`s2tw`、`s2twp`、`s2hk`、`t2s`、
+`t2tw`、`t2hk`、`tw2s`、`tw2sp`、`tw2t`、`hk2s`、`hk2t`。若需要測試
+`jp2t`、`t2jp`，請手動在 `expected` 中加入對應結果。
+
 ### 可用的轉換配置
 
 - `s2t` - 簡體到 OpenCC 標準繁體
@@ -247,6 +316,12 @@ PREBUILDS_ONLY=1 npm test
 - `t2s` - OpenCC 標準繁體到簡體
 - `t2tw` - OpenCC 標準繁體到臺灣正體
 - `t2hk` - OpenCC 標準繁體到香港繁體
+
+下列模式目前缺少大量詞組，歡迎貢獻新詞組：
+- `s2hkp` - 簡體到香港繁體（含地域用詞轉換）
+- `hk2sp` - 香港繁體到簡體（含地域用詞轉換）
+
+下列模式僅供探索性研究，不建議用於生產環境：
 - `jp2t` - 日文新字體到舊字體
 - `t2jp` - 日文舊字體到新字體
 
@@ -295,6 +370,14 @@ npm 插件包位於 `plugins/jieba/node/`。若修改 npm integration，請同�
 
 如需修改 `TWPhrases.txt`，需要同時修改 `TWPhrasesRev.txt`，反之亦然。否則測試會失敗。
 
+`TWVariantsPhrases.txt` 與 `TWVariantsRevPhrases.txt`、`HKVariantsPhrases.txt` 與
+`HKVariantsRevPhrases.txt` 則不是 `TWPhrases.txt` / `TWPhrasesRev.txt` 這種
+逐條互逆的詞彙對照表。`*VariantsPhrases.txt` 是正向地區異體字轉換的詞組級例外，
+當詞組命中時，該片段會按詞組條目轉換，不再受 `TWVariants.txt` 或 `HKVariants.txt`
+的字級映射影響；`*VariantsRevPhrases.txt` 是反向異體字轉換的詞組級例外，
+命中後同樣不再受產生的 `TWVariantsRev.txt` 或 `HKVariantsRev.txt` 的字級映射影響。
+兩者有關聯，但應依各自轉換方向的需要維護，不要求一組詞反向後必須出現在另一個檔案中。
+
 ### 涉及的配置檔案
 
 簡轉繁轉換主要涉及以下配置：
@@ -304,15 +387,38 @@ npm 插件包位於 `plugins/jieba/node/`。若修改 npm integration，請同�
 
 2. **`s2tw.json`** - 簡體轉臺灣正體
    - 使用 `STPhrases.txt`、`STCharacters.txt`
-   - 額外使用 `TWVariants.txt`
+   - 額外使用 `TWVariantsPhrases.txt`、`TWVariants.txt`
 
 3. **`s2twp.json`** - 簡體轉臺灣正體（含慣用詞）
    - 使用 `STPhrases.txt`、`STCharacters.txt`
-   - 額外使用 `TWPhrases.txt`、`TWVariants.txt`
+   - 額外使用 `TWPhrases.txt`、`TWVariantsPhrases.txt`、`TWVariants.txt`
 
 4. **`s2hk.json`** - 簡體轉香港繁體
    - 使用 `STPhrases.txt`、`STCharacters.txt`
-   - 額外使用 `HKVariants.txt`
+   - 額外使用 `HKVariantsPhrases.txt`、`HKVariants.txt`
+
+5. **`s2hkp.json`** - 簡體轉香港繁體（含慣用詞）
+   - 使用 `STPhrases.txt`、`STCharacters.txt`
+   - 額外使用 `HKPhrases.txt`、`HKVariantsPhrases.txt`、`HKVariants.txt`
+
+### 地區慣用詞與簡繁階段
+
+`TWPhrases.txt` / `HKPhrases.txt` 第一欄會自動生成
+`STPhrases_GeneratedFromRegionalPhrases`，用來降低 `STPhrases.txt` 的維護負擔。
+`s2t`、`s2tw`、`s2hk`、`s2twp`、`s2hkp` 等標準簡轉繁配置會在分詞階段和第一段
+簡繁轉換鏈使用這份生成詞典。分詞階段可避免簡體輸入在地區詞彙階段前被錯誤切分；
+第一段轉換鏈則可把 `t2s(地區詞表第一欄)` 投射回地區詞表 key，避免整個詞因分詞
+命中而保留為簡體。
+
+`TWPhrases.txt` / `HKPhrases.txt` 的第一欄可能是地區詞彙轉換前的另一種繁體形式，
+不一定總是 OpenCC Standard Traditional 的最佳輸出。因此，如果生成結果不應成為
+普通 `s2t` / `s2tw` / `s2hk` 的輸出，應在 `STPhrases.txt` 明確加入普通簡繁需要的
+條目或測試來固定預期，而不是只依賴地區詞表 key。
+
+因此，新增臺灣或香港慣用詞時，通常只需維護 `TWPhrases.txt` / `TWPhrasesRev.txt`
+或 `HKPhrases.txt` / `HKPhrasesRev.txt`。當 `t2s(地區詞表第一欄)` 與實際簡體
+輸入不一致，或普通簡繁輸出需要不同於地區詞表第一欄時，才需要額外在
+`STPhrases.txt` 補簡繁階段的條目。
 
 ### 測試建議
 
@@ -337,8 +443,8 @@ npm 插件包位於 `plugins/jieba/node/`。若修改 npm integration，請同�
 
 - **僅修改基本簡繁對應**：修改 `STCharacters.txt`，測試至少包含 `s2t`
 - **修改詞組轉換**：修改 `STPhrases.txt`，測試包含 `s2t`、`s2tw`、`s2twp`、`s2hk`
-- **臺灣特有用詞**：修改 `TWPhrases*.txt` 或 `TWVariants.txt`，測試包含 `s2tw`、`s2twp`
-- **香港特有用詞**：修改 `HKVariants*.txt`，測試包含 `s2hk`
+- **臺灣特有用詞**：修改 `TWPhrases*.txt` 或 `TWVariantsPhrases.txt`、`TWVariants.txt`，測試包含 `s2tw`、`s2twp`
+- **香港特有用詞**：修改 `HKVariantsPhrases.txt`、`HKVariants*.txt`，測試包含 `s2hk`
 
 ## 提交變更
 

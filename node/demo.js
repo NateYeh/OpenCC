@@ -26,23 +26,50 @@
  */
 
 // In your project you should replace './opencc' with 'opencc'
-const OpenCC = require('./opencc');
+const { OpenCC } = require('./opencc');
 
-console.log('OpenCC version', OpenCC.version);
+const input = '汉字';
 
-// Load the default Simplified to Traditional config
-const opencc = new OpenCC('s2t.json');
+async function main() {
+  console.log('OpenCC version', OpenCC.version);
 
-// Sync API
-const converted = opencc.convertSync("汉字");
-console.log(converted);
+  const converter = new OpenCC('s2t.json');
 
-// Async API
-opencc.convert("汉字", (err, converted) => {
-  console.log(err, converted);
-});
+  console.log('Sync API:', converter.convertSync(input));
 
-// Async API with Promise
-opencc.convertPromise("汉字").then(converted => {
-  console.log(converted);
+  const callbackResult = await new Promise((resolve, reject) => {
+    converter.convert(input, (err, converted) => {
+      if (err) {
+        reject(new Error(err));
+        return;
+      }
+      resolve(converted);
+    });
+  });
+  console.log('Callback API:', callbackResult);
+
+  console.log('Promise API:', await converter.convertPromise(input));
+
+  const config = {
+    name: 'Demo Inline Config',
+    conversion_chain: [
+      {
+        dict: {
+          type: 'inline',
+          entries: {
+            '鼠标': '滑鼠',
+            '软件': '軟體',
+          },
+        },
+      },
+    ],
+  };
+
+  const inlineConverter = OpenCC.fromConfig(config);
+  console.log('Inline config:', inlineConverter.convertSync('鼠标和软件'));
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
 });

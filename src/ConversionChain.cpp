@@ -17,6 +17,7 @@
  */
 
 #include <list>
+#include <string_view>
 
 #include "ConversionChain.hpp"
 #include "Segments.hpp"
@@ -54,10 +55,39 @@ void ConversionChain::AppendConvertedSegment(const char* segment,
   ++conversion;
   for (; conversion != lastConversion; ++conversion) {
     std::string next;
-    (*conversion)->AppendConverted(converted.c_str(), &next);
+    (*conversion)->AppendConverted(converted, &next);
     converted.swap(next);
   }
-  (*lastConversion)->AppendConverted(converted.c_str(), output);
+  (*lastConversion)->AppendConverted(converted, output);
+}
+
+void ConversionChain::AppendConvertedSegment(std::string_view segment,
+                                             std::string* output) const {
+  if (segment.empty()) {
+    return;
+  }
+  if (conversions.empty()) {
+    output->append(segment.data(), segment.size());
+    return;
+  }
+
+  auto conversion = conversions.begin();
+  auto lastConversion = conversions.end();
+  --lastConversion;
+  if (conversion == lastConversion) {
+    (*conversion)->AppendConverted(segment, output);
+    return;
+  }
+
+  std::string converted;
+  (*conversion)->AppendConverted(segment, &converted);
+  ++conversion;
+  for (; conversion != lastConversion; ++conversion) {
+    std::string next;
+    (*conversion)->AppendConverted(std::string_view(converted), &next);
+    converted.swap(next);
+  }
+  (*lastConversion)->AppendConverted(std::string_view(converted), output);
 }
 
 std::vector<SegmentsPtr>

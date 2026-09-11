@@ -22,7 +22,7 @@
 #   ZIG                 Zig executable to use. Defaults to "zig".
 #   ZIG_TARGET          Zig target triple. Defaults to "x86_64-windows-gnu".
 #   ZIG_OPTIMIZE        Optimization flag. Defaults to "-O2".
-#   OPENCC_VERSION      VERSION macro value. Defaults to MODULE.bazel version.
+#   OPENCC_VERSION      OPENCC_VERSION macro value. Defaults to MODULE.bazel version.
 #   ZIG_LOCAL_CACHE_DIR Zig local cache. Defaults to "$ROOT/.zig-local-cache".
 #   ZIG_GLOBAL_CACHE_DIR Zig global cache. Defaults to "$ROOT/.zig-global-cache".
 
@@ -48,7 +48,7 @@ if [[ -z "$version" ]]; then
       MODULE.bazel | head -n 1
   )"
 fi
-version="${version:-1.3.2}"
+version="${version:-1.4.2}"
 
 export ZIG_LOCAL_CACHE_DIR="${ZIG_LOCAL_CACHE_DIR:-$ROOT_DIR/.zig-local-cache}"
 export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-$ROOT_DIR/.zig-global-cache}"
@@ -76,9 +76,12 @@ sources=(
   src/Lexicon.cpp
   src/MarisaDict.cpp
   src/MaxMatchSegmentation.cpp
-  src/PluginSegmentation.cpp
   src/PhraseExtract.cpp
+  src/PipelineConverter.cpp
+  src/PluginSegmentation.cpp
+  src/SingleStageConverter.cpp
   src/PrefixMatch.cpp
+  src/ResourceProvider.cpp
   src/Segmentation.cpp
   src/SerializableDict.cpp
   src/SerializedValues.cpp
@@ -105,7 +108,7 @@ set +e
   -w \
   -Wno-nullability-completeness \
   -DNDEBUG \
-  "-DVERSION=\"$version\"" \
+  "-DOPENCC_VERSION=\"$version\"" \
   -DOpencc_BUILT_AS_STATIC \
   -I. \
   -Isrc \
@@ -113,7 +116,7 @@ set +e
   -Ideps/marisa-0.3.1/include \
   -Ideps/marisa-0.3.1/lib \
   -Ideps/tclap-1.2.5 \
-  -Ideps/darts-clone-0.32 \
+  -Ideps/darts-clone-0.32h/include \
   "${sources[@]}" \
   -lshell32 \
   -Wl,--strip-all \

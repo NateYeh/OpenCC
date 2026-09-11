@@ -1,4 +1,13 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
 package(default_visibility = ["//visibility:public"])
+
+# Bazel 10 no longer lets source files inherit package default_visibility;
+# //data references this text dictionary directly for the resources zip.
+exports_files(
+    ["CJK_Compatibility_Ideographs.txt"],
+    visibility = ["//visibility:public"],
+)
 
 [
     genrule(
@@ -12,7 +21,7 @@ package(default_visibility = ["//visibility:public"])
     for txt in [
         "TWVariants",
         "HKVariants",
-        "JPVariants",
+        "JPShinjitaiCharacters",
     ]
 ]
 
@@ -25,11 +34,17 @@ genrule(
     tools = ["//data/scripts:extract_tofu_risk"],
 )
 
-TEXT_DICTS = glob(["*.txt"]) + [
+TEXT_DICTS = glob(
+    ["*.txt"],
+    exclude = [
+        "CJK_Compatibility_Ideographs.txt",
+    ],
+) + [
+    "STPhrases_GeneratedFromRegionalPhrases.txt",
     "TSCharactersExt.txt",
     "TWVariantsRev.txt",
     "HKVariantsRev.txt",
-    "JPVariantsRev.txt",
+    "JPShinjitaiCharactersRev.txt",
 ]
 
 NON_BMP_TEXT_DICTS = [
@@ -57,14 +72,53 @@ NON_BMP_TEXT_DICTS = [
     for txt in TEXT_DICTS
 ]
 
+genrule(
+    name = "generate_STPhrases_GeneratedFromRegionalPhrases",
+    srcs = [
+        "HKPhrases.txt",
+        "TWPhrases.txt",
+        "CJK_Compatibility_Ideographs.ocd2",
+        "TSCharacters.ocd2",
+        "TSCharactersExt.ocd2",
+        "TSPhrases.ocd2",
+        "//data/config:t2s.json",
+    ],
+    outs = ["STPhrases_GeneratedFromRegionalPhrases.txt"],
+    cmd = "$(location //data/scripts:generate_st_phrases_from_regional_phrases) " +
+          "--input $(location HKPhrases.txt) " +
+          "--input $(location TWPhrases.txt) " +
+          "--output $@ " +
+          "--opencc $(location //src/tools:command_line) " +
+          "--config $(location //data/config:t2s.json) " +
+          "--dict-dir $$(dirname $(location TSPhrases.ocd2))",
+    tools = [
+        "//data/scripts:generate_st_phrases_from_regional_phrases",
+        "//src/tools:command_line",
+    ],
+)
+
 filegroup(
     name = "text_dictionaries",
     srcs = TEXT_DICTS,
 )
 
+genrule(
+    name = "generate_bin_CJK_Compatibility_Ideographs",
+    srcs = ["CJK_Compatibility_Ideographs.txt"],
+    outs = ["CJK_Compatibility_Ideographs.ocd2"],
+    cmd = "$(location //src/tools:dict_converter) " +
+          "--input $(location CJK_Compatibility_Ideographs.txt) " +
+          "--output $(OUTS) " +
+          "--from text " +
+          "--to ocd2",
+    tools = ["//src/tools:dict_converter"],
+)
+
 filegroup(
     name = "binary_dictionaries",
-    srcs = [txt.replace(".txt", ".ocd2") for txt in TEXT_DICTS],
+    srcs = [txt.replace(".txt", ".ocd2") for txt in TEXT_DICTS] + [
+        "CJK_Compatibility_Ideographs.ocd2",
+    ],
 )
 
 [
@@ -91,10 +145,12 @@ filegroup(
 ]
 
 cc_test(
-    name = "dictionary_TWPhrases_reverse_mapping_test",
+    name = "dictionary_phrases_reverse_mapping_test",
     size = "small",
     srcs = ["DictionaryReverseMappingTest.cpp"],
     data = [
+        "HKPhrases.txt",
+        "HKPhrasesRev.txt",
         "TWPhrases.txt",
         "TWPhrasesRev.txt",
     ],
@@ -107,15 +163,80 @@ cc_test(
 )
 
 cc_test(
-    name = "dictionary_TWPhrases_segmentation_test",
+    name = "dictionary_phrases_segmentation_test",
     size = "small",
-    srcs = ["DictionaryTaiwanPhraseSegmentationTest.cpp"],
+    srcs = ["DictionaryPhraseSegmentationTest.cpp"],
     data = [
+        "HKPhrases.txt",
         "STPhrases.txt",
+        "STPhrases_GeneratedFromRegionalPhrases.txt",
         "TWPhrases.txt",
     ],
     deps = [
         "//src:lexicon_lib",
+        "//src:utf8_util_lib",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "dictionary_phrase_character_dependency_test",
+    size = "small",
+    srcs = ["DictionaryPhraseCharacterDependencyTest.cpp"],
+    data = [
+        "HKVariantsPhrases.txt",
+        "HKVariantsRev.txt",
+        "HKVariantsRevPhrases.txt",
+        "HKVariants.txt",
+        "STCharacters.txt",
+        "STPhrases.txt",
+        "TSCharacters.txt",
+        "TSPhrases.txt",
+        "TWVariantsRev.txt",
+        "TWVariantsRevPhrases.txt",
+        "TWVariants.txt",
+        "TWVariantsPhrases.txt",
+    ],
+    deps = [
+        "//src:utf8_util_lib",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "dictionary_variant_rev_phrases_test",
+    size = "small",
+    srcs = ["DictionaryVariantRevPhrasesTest.cpp"],
+    data = [
+        "HKVariants.txt",
+        "HKVariantsRev.txt",
+        "HKVariantsRevPhrases.txt",
+        "STCharacters.txt",
+        "STPhrases.txt",
+        "TWVariants.txt",
+        "TWVariantsRev.txt",
+        "TWVariantsRevPhrases.txt",
+    ],
+    deps = [
+        "//src:utf8_util_lib",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "dictionary_compatibility_ideographs_test",
+    size = "small",
+    srcs = ["DictionaryCompatibilityIdeographsTest.cpp"],
+    local_defines = [
+        "OPENCC_COMPATIBILITY_AUDIT_FILES=\\\"" + ",".join(TEXT_DICTS) + "\\\"",
+    ],
+    data = [
+        "CJK_Compatibility_Ideographs.txt",
+    ] + TEXT_DICTS,
+    deps = [
         "//src:utf8_util_lib",
         "@bazel_tools//tools/cpp/runfiles",
         "@googletest//:gtest_main",
@@ -128,8 +249,11 @@ test_suite(
         ":dictionary_" + txt[:-4] + "_test"
         for txt in TEXT_DICTS
     ] + [
-        ":dictionary_TWPhrases_reverse_mapping_test",
-        ":dictionary_TWPhrases_segmentation_test",
+        ":dictionary_phrases_reverse_mapping_test",
+        ":dictionary_phrases_segmentation_test",
+        ":dictionary_compatibility_ideographs_test",
+        ":dictionary_phrase_character_dependency_test",
+        ":dictionary_variant_rev_phrases_test",
     ],
 )
 

@@ -17,13 +17,16 @@
  */
 
 #include "Export.hpp"
+#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifndef __OPENCC_SIMPLECONVERTER_HPP_
 #define __OPENCC_SIMPLECONVERTER_HPP_
 
 #include "ConversionInspection.hpp"
+#include "ResourceProvider.hpp"
 
 /**
  * @defgroup opencc_simple_api OpenCC C++ Simple API
@@ -33,9 +36,10 @@
 
 namespace opencc {
 
+struct ConfigLoadOptions;
+
 /**
- * A high level converter
- * This interface does not require C++11 to compile.
+ * A high-level converter.
  * @ingroup opencc_simple_api
  */
 class OPENCC_EXPORT SimpleConverter {
@@ -49,10 +53,28 @@ public:
   /**
    * Constructor of SimpleConverter
    * @param configFileName File name of configuration.
+   * @param options Configuration loading options.
+   */
+  SimpleConverter(const std::string& configFileName,
+                  const ConfigLoadOptions& options);
+
+  /**
+   * Constructor of SimpleConverter
+   * @param configFileName File name of configuration.
    * @param paths Additional paths to locate configuration and dictionary files.
    */
   SimpleConverter(const std::string& configFileName,
                   const std::vector<std::string>& paths);
+
+  /**
+   * Constructor of SimpleConverter
+   * @param configFileName File name of configuration.
+   * @param paths Additional paths to locate configuration and dictionary files.
+   * @param options Configuration loading options.
+   */
+  SimpleConverter(const std::string& configFileName,
+                  const std::vector<std::string>& paths,
+                  const ConfigLoadOptions& options);
 
   /**
    * Constructor of SimpleConverter
@@ -64,6 +86,38 @@ public:
   SimpleConverter(const std::string& configFileName,
                   const std::vector<std::string>& paths, const char* argv0);
 
+  /**
+   * Constructor of SimpleConverter
+   * @param configFileName File name of configuration.
+   * @param paths Additional paths to locate configuration and dictionary files.
+   * @param argv0 Path of the executable (argv[0]), in addition to additional
+   * paths.
+   * @param options Configuration loading options.
+   */
+  SimpleConverter(const std::string& configFileName,
+                  const std::vector<std::string>& paths, const char* argv0,
+                  const ConfigLoadOptions& options);
+
+  /**
+   * Constructor of SimpleConverter
+   * @param configFileName File name of configuration.
+   * @param provider Provider used to locate dictionary/resource files
+   * referenced by the configuration.
+   */
+  SimpleConverter(const std::string& configFileName,
+                  std::shared_ptr<ResourceProvider> provider);
+
+  /**
+   * Constructor of SimpleConverter
+   * @param configFileName File name of configuration.
+   * @param provider Provider used to locate dictionary/resource files
+   * referenced by the configuration.
+   * @param options Configuration loading options.
+   */
+  SimpleConverter(const std::string& configFileName,
+                  std::shared_ptr<ResourceProvider> provider,
+                  const ConfigLoadOptions& options);
+
   ~SimpleConverter();
 
   /**
@@ -71,6 +125,14 @@ public:
    * @param input Text to be converted.
    */
   std::string Convert(const std::string& input) const;
+
+  /**
+   * Converts a text without requiring a null-terminated buffer.
+   * New code should prefer this overload when a string_view is already
+   * available.
+   * @param input Text to be converted.
+   */
+  std::string Convert(std::string_view input) const;
 
   /**
    * Converts a text
@@ -112,7 +174,7 @@ public:
    * output string.
    * @param input Text to be inspected.
    */
-  ConversionInspectionResult Inspect(const std::string& input) const;
+  ConversionInspectionResult Inspect(std::string_view input) const;
 
 private:
   const void* internalData;

@@ -28,18 +28,24 @@ namespace opencc {
  */
 class OPENCC_EXPORT DartsDict : public Dict, public SerializableDict {
 public:
-  virtual ~DartsDict();
+  virtual ~DartsDict() override;
 
-  virtual size_t KeyMaxLength() const;
+  virtual size_t KeyMaxLength() const override;
 
-  virtual Optional<const DictEntry*> Match(const char* word, size_t len) const;
+  virtual Optional<const DictEntry*> Match(const char* word,
+                                           size_t len) const override;
 
   virtual Optional<const DictEntry*> MatchPrefix(const char* word,
-                                                 size_t len) const;
+                                                 size_t len) const override;
 
-  virtual LexiconPtr GetLexicon() const;
+  virtual LexiconPtr GetLexicon() const override;
 
-  virtual void SerializeToFile(FILE* fp) const;
+  virtual bool SupportsFastPrefixMatch() const override { return true; }
+
+  virtual PrefixMatchView MatchPrefixValue(const char* word,
+                                           size_t len) const override;
+
+  virtual void SerializeToFile(FILE* fp) const override;
 
   /**
    * Constructs a DartsDict from another dictionary.
@@ -47,6 +53,7 @@ public:
   static DartsDictPtr NewFromDict(const Dict& thatDict);
 
   static DartsDictPtr NewFromFile(FILE* fp);
+  static DartsDictPtr NewFromBuffer(const char* data, size_t size);
 
 private:
   DartsDict();

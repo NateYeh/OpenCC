@@ -19,11 +19,43 @@
 #pragma once
 
 #include <list>
+#include <string_view>
 
 #include "Common.hpp"
 #include "DictEntry.hpp"
 
 namespace opencc {
+
+/**
+ * Defines how a dictionary group resolves matches across child dictionaries.
+ */
+enum class DictGroupMatchPolicy {
+  /**
+   * Preserve legacy DictGroup behavior: query child dictionaries in order and
+   * return the first dictionary that has a match. For prefix lookup, this means
+   * a shorter prefix from an earlier dictionary can win over a longer prefix
+   * from a later dictionary.
+   */
+  ShortCircuit,
+  /**
+   * Treat child dictionaries as a union for prefix lookup: the longest prefix
+   * across all children wins, with dictionary order breaking ties.
+   */
+  Union,
+};
+
+/**
+ * Result of a PrefixMatch fast-path lookup.
+ * key and value are non-owning views; see PrefixMatch::MatchPrefixView()
+ * for lifetime details.
+ */
+struct OPENCC_EXPORT PrefixMatchView {
+  bool matched = false;
+  size_t keyLength = 0;
+  std::string_view key;
+  std::string_view value;
+};
+
 /**
  * Abstract class of dictionary
  * @ingroup opencc_cpp_api
@@ -97,5 +129,33 @@ public:
   virtual const std::list<DictPtr>* GetDictGroupItems() const {
     return nullptr;
   }
+
+  /**
+   * Returns the match policy when this dictionary is a group. Non-group
+   * dictionaries return ShortCircuit because the value is ignored unless
+   * GetDictGroupItems() returns children.
+   */
+  virtual DictGroupMatchPolicy GetMatchPolicy() const {
+    return DictGroupMatchPolicy::ShortCircuit;
+  }
+
+  /**
+   * Returns true if this dict can handle prefix queries directly without
+   * PrefixMatch building a lookup table. Subclasses that override
+   * MatchPrefixValue() must also override this to return true.
+   */
+  virtual bool SupportsFastPrefixMatch() const { return false; }
+
+  /**
+   * Fast-path prefix match. Only called when SupportsFastPrefixMatch() is
+   * true. Returns a PrefixMatchView with matched=false on no match.
+   * See PrefixMatch::MatchPrefixView() for key/value lifetime details.
+   */
+  virtual PrefixMatchView MatchPrefixValue(const char* word,
+                                           size_t len) const {
+    return PrefixMatchView{};
+  }
+
+  virtual ~Dict() = default;
 };
 } // namespace opencc

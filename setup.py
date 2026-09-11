@@ -15,7 +15,7 @@ _build_dir = os.path.join(_this_dir, 'build', 'python')
 _cmake_file = os.path.join(_this_dir, 'CMakeLists.txt')
 _author_file = os.path.join(_this_dir, 'AUTHORS')
 _readme_file = os.path.join(_this_dir, 'README.md')
-_fallback_version = '1.3.2'
+_fallback_version = '1.4.2'
 
 
 def _get_version_from_git():
@@ -111,6 +111,7 @@ def build_libopencc(output_path):
         '-DBUILD_SHARED_LIBS:BOOL=OFF',
         '-DENABLE_GTEST:BOOL=OFF',
         '-DENABLE_BENCHMARK:BOOL=OFF',
+        '-DBUILD_OPENCC_JIEBA_PLUGIN:BOOL=OFF',
         '-DBUILD_PYTHON:BOOL=ON',
         '-DCMAKE_BUILD_TYPE=Release',
         '-DCMAKE_INSTALL_PREFIX={}'.format(output_path),
@@ -219,6 +220,11 @@ setuptools.setup(
         'bdist_wheel': BDistWheelCommand,
     },
     setup_requires=setup_requires,
+    entry_points={
+        'console_scripts': [
+            'opencc=opencc.cli:main',
+        ],
+    },
 
     classifiers=[
         'Development Status :: 5 - Production/Stable',

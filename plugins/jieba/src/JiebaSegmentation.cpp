@@ -316,10 +316,10 @@ JiebaSegmentation::JiebaSegmentation(const std::string& dictPath,
 
 JiebaSegmentation::~JiebaSegmentation() = default;
 
-SegmentsPtr JiebaSegmentation::Segment(const std::string& text) const {
+SegmentsPtr JiebaSegmentation::Segment(std::string_view text) const {
   SegmentsPtr segments(new Segments);
   std::vector<std::string> words;
-  jieba_->Cut(text, words, true);
+  jieba_->Cut(std::string(text), words, true);
   for (const auto& word : words) {
     segments->AddSegment(word);
   }

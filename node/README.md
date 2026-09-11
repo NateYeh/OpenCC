@@ -12,10 +12,14 @@ npm install opencc
 
 The package requires Node.js `>=20.17`.
 
-OpenCC ships native bindings. When a matching prebuilt binary is available,
-installation uses it automatically. Otherwise npm builds the native addon from
-source, which requires a working C++ toolchain and Python supported by
-`node-gyp`.
+OpenCC ships native bindings as prebuilt binaries. Installation automatically
+selects the matching `@opencc/opencc-<platform>-<arch>` package, covering
+macOS (x64/arm64), Linux (x64/arm64), and Windows (x64). On platforms without
+a prebuilt binary package, `npm install` builds from source with Bazel,
+compiling the addon and regenerating the dictionaries: this requires a C++
+toolchain and network access, and uses `bazel` or `bazelisk` from PATH (or
+fetches bazelisk automatically via `npx`); Bazel downloads its own hermetic
+Python toolchain for the dictionary generation scripts.
 
 ## Basic Usage
 
@@ -72,12 +76,27 @@ TypeScript type declarations are included.
 
 ## API
 
-### `new OpenCC(config?)`
+### `new OpenCC(config?, options?)`
 
 Creates a converter. If `config` is omitted, OpenCC uses `s2t.json`.
 
 `config` can be one of the built-in configuration file names, such as
-`s2t.json`, or an absolute path to a custom OpenCC configuration file.
+`s2t.json`, an absolute path to a custom OpenCC configuration file, or an
+OpenCC configuration object.
+
+`options.includeTofuRiskDictionaries` controls whether dictionaries marked as
+possibly outputting tofu are loaded. Here, tofu means Chinese characters that
+cannot be displayed and may render as missing-glyph boxes. It defaults to
+`true` for JavaScript API compatibility.
+
+`options.configDirectory` sets the base directory used to resolve relative
+dictionary paths in inline configuration objects. It defaults to the package's
+bundled OpenCC assets directory.
+
+### `OpenCC.fromConfig(config, options?)`
+
+Creates a converter from an OpenCC configuration object. This is equivalent to
+passing the object to `new OpenCC(config, options)`.
 
 ### `converter.convertSync(input)`
 
@@ -135,12 +154,18 @@ Options:
 -c, --config <file>  Configuration file. Defaults to s2t.json.
 -i, --input <file>   Read original text from <file>. Defaults to stdin.
 -o, --output <file>  Write converted text to <file>. Defaults to stdout.
+--include-tofu-risk-dictionaries
+                     Include dictionaries that may output tofu: Chinese
+                     characters rendered as missing-glyph boxes.
 -v, --version        Print OpenCC version.
 -h, --help           Print help.
 ```
 
-The npm CLI supports conversion only. Use the native OpenCC command line tool
-for inspection, segmentation output, custom resource search paths, or other
+The npm CLI skips dictionaries marked as possibly outputting tofu by default.
+Here, tofu means Chinese characters that cannot be displayed and may render as
+missing-glyph boxes. Use `--include-tofu-risk-dictionaries` to load them. The
+npm CLI supports conversion only. Use the native OpenCC command line tool for
+inspection, segmentation output, custom resource search paths, or other
 advanced CLI features.
 
 ## Built-in Configurations
@@ -153,8 +178,8 @@ advanced CLI features.
 | `tw2s.json` | Traditional Chinese (Taiwan Standard) to Simplified Chinese / 台灣正體到簡體 |
 | `s2hk.json` | Simplified Chinese to Traditional Chinese (Hong Kong variant) / 簡體到香港繁體 |
 | `hk2s.json` | Traditional Chinese (Hong Kong variant) to Simplified Chinese / 香港繁體到簡體 |
-| `s2twp.json` | Simplified Chinese to Traditional Chinese (Taiwan Standard) with Taiwanese idiom / 簡體到台灣正體，並轉換為台灣常用詞彙 |
-| `tw2sp.json` | Traditional Chinese (Taiwan Standard) to Simplified Chinese with Mainland Chinese idiom / 台灣正體到簡體，並轉換為中國大陸常用詞彙 |
+| `s2twp.json` | Simplified Chinese to Traditional Chinese (Taiwan Standard, with Taiwan Phrases) / 簡體到台灣正體（含台灣常用詞彙） |
+| `tw2sp.json` | Traditional Chinese (Taiwan Standard) to Simplified Chinese (Mainland China Phrases) / 台灣正體到簡體（含中國大陸常用詞彙） |
 | `t2tw.json` | Traditional Chinese (OpenCC Standard) to Traditional Chinese (Taiwan Standard) / OpenCC 標準繁體到台灣正體 |
 | `tw2t.json` | Traditional Chinese (Taiwan Standard) to Traditional Chinese (OpenCC Standard) / 台灣正體到 OpenCC 標準繁體 |
 | `t2hk.json` | Traditional Chinese (OpenCC Standard) to Traditional Chinese (Hong Kong variant) / OpenCC 標準繁體到香港繁體 |
@@ -177,6 +202,34 @@ Relative config paths are resolved from the current working directory by the
 CLI. In the JavaScript API, relative config names are resolved from the package
 assets directory, so custom configs should be passed as absolute paths.
 
+You can also pass an OpenCC configuration object directly:
+
+```js
+import OpenCC from 'opencc';
+
+const converter = OpenCC.fromConfig({
+  name: 'Custom Inline Config',
+  segmentation: {
+    type: 'mmseg',
+    dict: { type: 'inline', entries: { '鼠标': '鼠标' } },
+  },
+  conversion_chain: [{
+    dict: { type: 'inline', entries: { '鼠标': '滑鼠' } },
+  }],
+});
+
+console.log(converter.convertSync('鼠标坏了'));
+```
+
+When an inline configuration references relative dictionary files, pass
+`configDirectory`:
+
+```js
+const converter = OpenCC.fromConfig(config, {
+  configDirectory: '/absolute/path/to/opencc-resources',
+});
+```
+
 Custom dictionaries can be generated with `OpenCC.generateDict()` or with the
 native `opencc_dict` tool from the full OpenCC distribution.
 
@@ -191,6 +244,10 @@ npm install opencc opencc-jieba
 
 When `opencc-jieba` is installed, the JavaScript API and npm `opencc` CLI can
 load its configs automatically:
+
+Available plugin-backed configs include `s2t_jieba.json`,
+`s2tw_jieba.json`, `s2hk_jieba.json`, `s2twp_jieba.json`, and
+`tw2sp_jieba.json`.
 
 ```js
 import OpenCC from 'opencc';
@@ -243,6 +300,15 @@ From the repository root:
 ```bash
 npm install
 npm test
+```
+
+The `OpenCCConfig` TypeScript declarations in `opencc.d.ts`,
+`opencc.d.cts`, and `opencc.d.mts` are generated from
+`data/config/opencc_config.schema.json`. Regenerate them after changing the
+schema:
+
+```bash
+npm run generate:node-config-types
 ```
 
 To build prebuilt native addons for publishing, see

@@ -1,3 +1,5 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
@@ -15,13 +17,14 @@ cc_library(
     hdrs = ["CommandLineMain.hpp"],
     deps = [
         ":platform_io_lib",
-        "//deps/rapidjson-1.1.0:rapidjson",
         "//src:cmd_line_output_lib",
         "//src:config_lib",
+        "//src:conversion_ambiguities_lib",
         "//src:conversion_inspection_lib",
         "//src:converter_lib",
         "//src:exception_lib",
         "//src:segments_lib",
+        "@rapidjson//:rapidjson",
     ],
 )
 
@@ -58,5 +61,15 @@ cc_binary(
     deps = [
         "//src:cmd_line_output_lib",
         "//src:phrase_extract_lib",
+    ],
+)
+
+cc_binary(
+    name = "speed_benchmark",
+    srcs = ["SpeedBenchmark.cpp"],
+    deps = [
+        "//src:resource_provider_lib",
+        "//src:simple_converter_lib",
+        "//src:utf8_util_lib",
     ],
 )
