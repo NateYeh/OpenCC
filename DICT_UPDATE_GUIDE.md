@@ -1,9 +1,79 @@
 # OpenCC 字典更新說明
 
 OpenCC 的二進制字典檔 `.ocd2` 是由 `data/dictionary/*.txt` 原始檔編譯而來。
-修改字典必須遵循 **編輯文字檔 → 重新編譯 `.ocd2` → 覆蓋 site-packages** 的流程。
+
+本 fork 的客製修正採 **Overlay 方案**（見下節），**不改動 upstream 字典檔**，
+因此 sync upstream 時不會產生 merge conflict。
 
 ---
+
+## 客製化方式：Overlay（推薦）
+
+### 架構
+
+```
+data/overlay/
+├── s2twp-custom.json              # 自訂 config（複製 s2twp.json 並插入 overlay）
+├── s2twp-overlay-phrases.txt      # 詞組修正（STPhrases 層）
+├── s2twp-overlay-chars.txt        # 單字修正（STCharacters 層）
+└── s2twp-overlay-tw.txt           # 台灣用語修正（TWPhrases 層）
+```
+
+### 原理
+
+OpenCC config 支援 `group` dict 與 `text` dict：
+
+- **`text`**：純文字字典，**執行時載入，免編譯**
+- **`group` + `match_policy`**：
+  - `union`：取**最長匹配**；同長度時**第一個 dict 優先**
+  - `short_circuit`：**第一個命中的 dict 優先**
+
+把 overlay 放在 group **最前面**，即可覆蓋 upstream 字典。
+
+### 部署
+
+```bash
+cd /mnt/public/Develop/Projects/external_projects/OpenCC/build/rel
+TARGET="/home/nate/.conda/envs/py311/lib/python3.11/site-packages/opencc/clib/share/opencc"
+cp data/*.ocd2 "$TARGET/"
+cp ../../data/overlay/* "$TARGET/"
+```
+
+> ⚠️ config 內的相對路徑以 **config 所在目錄**為基準，故 overlay 必須與 config 同目錄。
+
+### 使用
+
+```python
+from opencc import OpenCC
+c = OpenCC('s2twp-custom')   # 客製版
+c = OpenCC('s2twp')          # upstream 原版
+```
+
+應用層 `natekit.api.text_processor._get_opencc_converter()` 優先載入 `s2twp-custom`，
+載入失敗才退回 `s2twp`。
+
+### 新增客製項目
+
+1. 編輯 `data/overlay/s2twp-overlay-*.txt`（格式同一般字典 `key\tvalue`）
+2. 複製到 site-packages（**無需重新編譯**）
+3. 測試
+
+> **刪除 upstream 條目**無法用 overlay 直接表達；改用**自映射**（`key\tkey`）達到相同效果。
+
+### 從 upstream 字典差異重建 overlay
+
+若曾直接改過 `data/dictionary/*.txt`，可用以下邏輯重建 overlay：
+
+```python
+# 對每個 key：
+#   修改項  → overlay[key] = 我們的 value
+#   新增項  → overlay[key] = 我們的 value
+#   刪除項  → overlay[key] = key（自映射）
+```
+
+---
+
+## 直接修改字典（僅供臨時驗證）
 
 ## 字典檔結構
 
@@ -175,8 +245,9 @@ OpenCC 使用 **MaxMatch（最長匹配）** 分詞，這會導致短詞組「�
 | 工具 | 路徑 |
 |------|------|
 | 字典編譯器 | `build/rel/src/tools/opencc_dict` |
-| 源文字檔 | `data/dictionary/*.txt` |
-| 設定檔 | `data/config/s2twp.json` |
+| 源文字檔（upstream，勿改） | `data/dictionary/*.txt` |
+| **客製 overlay** | `data/overlay/*.txt` |
+| **客製 config** | `data/overlay/s2twp-custom.json` |
 | 輸出二進制 | `build/rel/data/*.ocd2` |
 | Python 字典目錄 | `site-packages/opencc/clib/share/opencc/` |
 
