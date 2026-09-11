@@ -24,11 +24,27 @@ data/overlay/
 OpenCC config 支援 `group` dict 與 `text` dict：
 
 - **`text`**：純文字字典，**執行時載入，免編譯**
-- **`group` + `match_policy`**：
-  - `union`：取**最長匹配**；同長度時**第一個 dict 優先**
-  - `short_circuit`：**第一個命中的 dict 優先**
+- **`group`**：多字典組合
 
-把 overlay 放在 group **最前面**，即可覆蓋 upstream 字典。
+> ⚠️ **重要**：本機安裝的 OpenCC **1.3.1 不支援 `match_policy: union`**
+> （指定 `union` 也會被當成 `short_circuit`）。因此 **dict 順序即優先序**：
+> `short_circuit` 下**第一個命中的 dict 勝出**（即使它比較短）。
+
+### dict 順序（關鍵）
+
+```
+conversion_chain[0] group（short_circuit）:
+  [ overlay-phrases, STPhrases, overlay-chars, STCharacters ]
+     ↑ 詞組 overlay 最前（覆蓋 upstream 詞組）
+                      ↑ upstream 詞組表
+                                ↑ 單字 overlay 殿後
+                                            ↑ upstream 單字表
+```
+
+**單字 overlay 必須排在詞組表之後**：否則 1 字的 `台` 會搶先命中，
+導致 `台面 → 台面`（而非正確的 `檯面`）。
+
+> 若日後升級到支援 `union` 的 OpenCC，`union` 取最長匹配，上述順序依然正確。
 
 ### 部署
 
@@ -40,6 +56,9 @@ cp ../../data/overlay/* "$TARGET/"
 ```
 
 > ⚠️ config 內的相對路徑以 **config 所在目錄**為基準，故 overlay 必須與 config 同目錄。
+
+> ⚠️ `s2twp-custom.json` 係以 **site-packages 內實際安裝的 `s2twp.json`（1.3.1 格式）** 為基礎，
+> 而非 repo 的 `data/config/s2twp.json`（新版格式）。升級 OpenCC 後需重新對齊。
 
 ### 使用
 
