@@ -26,39 +26,38 @@ OpenCC config 支援 `group` dict 與 `text` dict：
 - **`text`**：純文字字典，**執行時載入，免編譯**
 - **`group`**：多字典組合
 
-> ⚠️ **重要**：本機安裝的 OpenCC **1.3.1 不支援 `match_policy: union`**
-> （指定 `union` 也會被當成 `short_circuit`）。因此 **dict 順序即優先序**：
-> `short_circuit` 下**第一個命中的 dict 勝出**（即使它比較短）。
+> ✅ **環境**：已升級至 OpenCC **1.4.2**（支援 `match_policy: union`，取最長匹配）。
+> 注意：**1.3.1 不支援 `union`**（會被當成 `short_circuit`），若環境回退舊版，
+> dict 順序即優先序，需確保**單字 overlay 排在詞組表之後**。
 
-### dict 順序（關鍵）
+### dict 順序
 
 ```
-conversion_chain[0] group（short_circuit）:
-  [ overlay-phrases, STPhrases, overlay-chars, STCharacters ]
-     ↑ 詞組 overlay 最前（覆蓋 upstream 詞組）
-                      ↑ upstream 詞組表
-                                ↑ 單字 overlay 殿後
-                                            ↑ upstream 單字表
+conversion_chain[0] inner group（union，取最長）:
+  [ overlay-phrases, overlay-chars, STPhrases, STPhrases_Generated ]
 ```
 
-**單字 overlay 必須排在詞組表之後**：否則 1 字的 `台` 會搶先命中，
-導致 `台面 → 台面`（而非正確的 `檯面`）。
+`union` 取最長匹配，故 1 字的 `台` 不會遮蔽 2 字的 `台面`（→ `檯面`）。
+同長度時**第一個 dict 優先**，所以 overlay 必須排在 upstream 字典之前才能覆蓋。
 
-> 若日後升級到支援 `union` 的 OpenCC，`union` 取最長匹配，上述順序依然正確。
+> ⚠️ 若在 **1.3.1** 執行，`union` 失效，此時必須改為 `short_circuit` 並重排為
+> `[ overlay-phrases, STPhrases, overlay-chars, STCharacters ]`，否則 `台面 → 台面`。
 
 ### 部署
 
 ```bash
-cd /mnt/public/Develop/Projects/external_projects/OpenCC/build/rel
+# 首次或升級：安裝指定版本
+pip install -U opencc==1.4.2
+
+# 部署 overlay（config 相對路徑以自身目錄為基準，須同目錄）
 TARGET="/home/nate/.conda/envs/py311/lib/python3.11/site-packages/opencc/clib/share/opencc"
-cp data/*.ocd2 "$TARGET/"
-cp ../../data/overlay/* "$TARGET/"
+cp /mnt/public/Develop/Projects/external_projects/OpenCC/data/overlay/* "$TARGET/"
 ```
 
-> ⚠️ config 內的相對路徑以 **config 所在目錄**為基準，故 overlay 必須與 config 同目錄。
+> 使用 overlay 後**不需**再編譯/複製 `.ocd2`（直接使用 pip 套件內建的字典）。
 
-> ⚠️ `s2twp-custom.json` 係以 **site-packages 內實際安裝的 `s2twp.json`（1.3.1 格式）** 為基礎，
-> 而非 repo 的 `data/config/s2twp.json`（新版格式）。升級 OpenCC 後需重新對齊。
+> ⚠️ `s2twp-custom.json` 係以 **site-packages 內安裝的 `s2twp.json`（1.4.2 格式）** 為基礎，
+> 升級 OpenCC 後需重新對齊。
 
 ### 使用
 
