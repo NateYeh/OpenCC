@@ -14,10 +14,15 @@ OpenCC 的二進制字典檔 `.ocd2` 是由 `data/dictionary/*.txt` 原始檔編
 ```
 data/overlay/
 ├── s2twp-custom.json              # 自訂 config（複製 s2twp.json 並插入 overlay）
+├── s2twp-custom-mpdp.json         # 同上，分割改用 mpdp 外掛（現行預設）
 ├── s2twp-overlay-phrases.txt      # 詞組修正（STPhrases 層）
 ├── s2twp-overlay-chars.txt        # 單字修正（STCharacters 層）
-└── s2twp-overlay-tw.txt           # 台灣用語修正（TWPhrases 層）
+└── s2twp-overlay-tw.txt           # 台灣用語修正（TWPhrases 層，**鍵為繁體**）
 ```
+
+> ⚠️ `overlay-tw` 的鍵必須是**繁體**（chain2 在 s2t 之後才執行），
+> 例：`的士氣`（✅）而非 `的士气`（❌）。反之，mpdp 的分割詞表需要**簡體形**，
+> 故改動 overlay-tw 後必須重建 mpdp 合併詞表（見底下專節）。
 
 ### 原理
 
@@ -52,7 +57,14 @@ pip install -U opencc==1.4.2
 # 部署 overlay（config 相對路徑以自身目錄為基準，須同目錄）
 TARGET="/home/nate/.conda/envs/py311/lib/python3.11/site-packages/opencc/clib/share/opencc"
 cp /mnt/public/Develop/Projects/external_projects/OpenCC/data/overlay/* "$TARGET/"
+
+# 若要用 mpdp 分割（現行預設）→ 編譯外掛 + 產生合併詞表
+cd /mnt/public/Develop/Projects/external_projects/OpenCC
+python3 plugins/mpdp/tools/install.py
 ```
+
+> ⚠️ **改了 overlay 就要重建 mpdp 合併詞表**，否則新加的盾牌詞不在分割詞表內，
+> 會被 DP 切開而失效（詳見底下專節）。
 
 > 使用 overlay 後**不需**再編譯/複製 `.ocd2`（直接使用 pip 套件內建的字典）。
 
@@ -63,12 +75,14 @@ cp /mnt/public/Develop/Projects/external_projects/OpenCC/data/overlay/* "$TARGET
 
 ```python
 from opencc import OpenCC
-c = OpenCC('s2twp-custom')   # 客製版
-c = OpenCC('s2twp')          # upstream 原版
+c = OpenCC('s2twp-custom-mpdp')   # 客製版 + 詞頻 DP 分割（預設）
+c = OpenCC('s2twp-custom')        # 客製版 + mmseg
+c = OpenCC('s2twp')               # upstream 原版
 ```
 
-應用層 `natekit.api.text_processor._get_opencc_converter()` 優先載入 `s2twp-custom`，
-載入失敗才退回 `s2twp`。
+應用層 `natekit.api.text_processor._get_opencc_converter()` 依序嘗試
+`s2twp-custom-mpdp` → `s2twp-custom` → `s2twp`，任一層失敗都會 `logger.exception`
+後降級（未安裝外掛的環境仍可運作）。
 
 ### 新增客製項目
 
@@ -213,6 +227,10 @@ python3 -c "from opencc import OpenCC; print(OpenCC('s2twp').convert('娘亲'))"
 | 編譯成功但 Python 沒生效 | `.ocd2` 沒覆蓋到 site-packages | `cp` 到 `opencc/clib/share/opencc/` |
 | 單字改了但詞組仍舊 | `STPhrases.txt` 沒同步修改 | 同時修改單字表和詞組表 |
 | `TSCharacters` 沒更新 | 反向映射是 cmake 自動生成 | 清理 `build/rel/data/` 重新編譯全套字典 |
+| 新加的 overlay 在 mmseg 生效、mpdp 不生效 | 沒重建 mpdp 合併詞表 | 跑 `plugins/mpdp/tools/install.py` |
+| 新加 overlay-tw 盾牌兩個模式都失效 | 鍵寫成簡體（chain2 需要繁體鍵） | 改成繁體，例：`的士氣` |
+| mpdp 下多字盾牌失效（mmseg 正常） | chain2 繁體 key 沒補 t2s 簡體形 | 重建詞表（builder 規則 4） |
+| 詞明明在字典卻被切開 | 詞條頻率輸給單字切分聯合機率 | builder 規則 3 會補到 `phrase_freq` |
 
 ---
 
@@ -304,22 +322,48 @@ STPhrases 有 ~90 條 `Y发 → Y髮`（如 `断发 → 斷髮`、`白发 → �
 
 實測這批修正使全量小說誤判 `髮` 從 1875 降至 14。
 
-## 分割層修正：MPDP 外掛（取代逐條補詞）
+### 典型案例 6：多值詞條取第一值，領域詞誤套一般語境
 
-上面 5 個典型案例的病根都是 **mmseg（正向最大匹配）只能「信任左邊」**：
-`X发Y` 這類歧義它無法判斷，只能靠逐條補詞去擋。
-若改用 `plugins/mpdp/`（詞頻 DP 分割外掛），這一類修正可整批退場：
+`TWPhrases.txt` 有些詞條是**多值**（同一個 key 列多個候選，以空格分隔），
+OpenCC 的 `MatchPrefix` 只取**第一個值**：
 
-```json
-"segmentation": { "type": "mpdp",
-                  "resources": { "dict_path": "mpdp/jieba_mpdp.dict.utf8" } }
+```
+對象	物件 對象      → 查验对象  變成 查驗物件  ❌
+循環	迴圈 循環      → 恶性循环  變成 惡性迴圈  ❌
+菜單	選單 菜單      → 特别菜单  變成 特別選單  ❌
 ```
 
-實測（2M 字小說，對照 `s2twp-custom`）：`隻/只` 誤判 11 → 0，
-`瞭/了` 51 → 2，`製/制` 4 → 0，`裡/里`、`麵/面`、`後/后`、
-`蒐/搜`、`遊/游`、`幾/几` 全部修正，輸出長度無差異（無文字遺失）。
+問題在於被選中的值多是**領域專用詞**（`物件`=物品、`迴圈`=程式 loop、
+`選單`=軟體 UI），套到一般語境就語意錯誤。
 
-詳見 `plugins/mpdp/README.md`。以下典型案例仍適用於必須使用 `mmseg` 的場合。
+**解法**：在 `overlay-tw` 加自映射盾牌，把第一值改成一般義，
+再為特殊義補**更長的**盾牌（與典型案例 1 同手法）：
+
+```
+對象	對象
+循環	循環
+菜單	菜單
+死循環	死迴圈      無限循環	無限迴圈
+下拉菜單	下拉選單     系統菜單	系統選單
+                        主菜單	主選單
+```
+
+判斷依據要**看語料實際義項分布**，不要憑感覺：
+
+| 詞條 | 語料實測 | 處理 |
+|------|---------|------|
+| `对象` | 966 次全是「人/目標」，`物件`義 0 | 自映射 |
+| `循环` | 306 次，自然義 ~270、程式義 ~36 | 自映射 + 2 條程式盾牌 |
+| `菜单` | 51 次全是餐廳，軟體義 0 | 自映射 |
+| `消息` | 21395 次，`訊息` 確為台灣標準 | 不動（語體偏好） |
+| `打開` | 7599 次，`開啟` 屬語體偏好 | 不動 |
+
+> ⚠️ 語**意**錯誤（`物件`/`迴圈`/`選單` 是別的意思）才改；
+> 語**體**偏好（`訊息`/`開啟`/`高階`）維持 upstream，不要自作主張。
+> 可用這行撈出所有多值詞條：
+> ```bash
+> awk -F'\t' 'NF>=2 && $1 !~ /^#/ && split($2,v," ")>1' data/dictionary/TWPhrases.txt
+> ```
 
 ### 解決策略：加長詞組「盾牌」
 
@@ -351,6 +395,69 @@ STPhrases 有 ~90 條 `Y发 → Y髮`（如 `断发 → 斷髮`、`白发 → �
 
 ---
 
+## 分割層修正：MPDP 外掛（取代逐條補詞）
+
+上面案例 1～5 的病根都是 **mmseg（正向最大匹配）只能「信任左邊」**：
+`X发Y` 這類歧義它無法判斷，只能靠逐條補詞去擋。
+（案例 6 不同：它是 chain2 詞條內容問題，與分割方式無關，mpdp 亦然。）
+若改用 `plugins/mpdp/`（詞頻 DP 分割外掛），案例 1～5 這一類修正可整批退場：
+
+```json
+"segmentation": { "type": "mpdp",
+                  "resources": { "dict_path": "mpdp/jieba_mpdp.dict.utf8" } }
+```
+
+實測（2M 字小說，對照 `s2twp-custom`）：`隻/只` 誤判 11 → 0，
+`瞭/了` 51 → 2，`製/制` 4 → 0，`裡/里`、`麵/面`、`後/后`、
+`蒐/搜`、`遊/游`、`幾/几` 全部修正，輸出長度無差異（無文字遺失）。
+
+詳見 `plugins/mpdp/README.md`。上述策略（案例 1～5 的解法）仍適用於
+必須使用 `mmseg` 的場合，以及 mpdp 也處理不掉的**詞條內容**問題（案例 6）。
+
+---
+
+## 改了 overlay 就要重建 MPDP 合併詞表
+
+mpdp 的分割詞表（`mpdp/jieba_mpdp.dict.utf8`）是**產生檔**，由
+`plugins/mpdp/tools/build_mpdp_dict.py` 從 jieba 詞頻 + 各轉換詞表合成。
+只要動了 `data/overlay/*.txt` 或 `data/dictionary/*.txt`，就必須重建：
+
+```bash
+cd /mnt/public/Develop/Projects/external_projects/OpenCC
+python3 plugins/mpdp/tools/install.py          # 編譯 + 詞表 + 設定一次完成
+# 或只重建詞表（不重編外掛）
+python3 plugins/mpdp/tools/build_mpdp_dict.py \
+    --output "$TARGET/mpdp/jieba_mpdp.dict.utf8" --phrase-freq 100
+```
+
+### builder 的四條規則
+
+| # | 規則 | 為什麼 |
+|---|------|--------|
+| 1 | jieba 詞頻原樣保留 | DP 需要真實頻率才能正確打分 |
+| 2 | 轉換詞條 jieba 沒有的補上 | 詞條被切開就永遠不生效（`被发佯狂` → `被發佯狂`） |
+| 3 | jieba 已收錄但頻率 < `phrase_freq` 者補到 `phrase_freq` | jieba 對冷門詞的頻率可能輸給單字聯合機率（`字段` freq=6 輸給 `字`×`段`）→ `字段→欄位` 失效 |
+| 4 | 所有 key 連同 **t2s 簡體形**一起進詞表 | chain2 的 key 是**繁體**，但分割器跑在**簡體輸入**上；規則 2/3 補了繁體 key 也對不上（`無限循環` vs `无限循环`） |
+
+### `phrase_freq` 怎麼選
+
+只要「足以壓過切分」即可（切分多出詞數、多付罰分，長詞天然佔優）。
+設太大反而蓋掉 jieba 的正確切分：
+
+| phrase_freq | 結果 |
+|-------------|------|
+| 3 / 20 / 100 | 一致（實測），`反制得挺快` 正確 |
+| 1000 以上 | `反制得挺快` → `反製得挺快` ❌ |
+
+故定為 **100**。
+
+### 為什麼改了 overlay-tw 特別容易漏
+
+`overlay-tw` 的鍵是**繁體**，需要經過 t2s 才能進分割詞表（規則 4）。
+漏掉的症狀是「mmseg 正常、mpdp 不生效」，例如 `系統菜單` 盾牌失效 → `系統菜單`。
+
+---
+
 ## 相關工具位置
 
 | 工具 | 路徑 |
@@ -358,7 +465,12 @@ STPhrases 有 ~90 條 `Y发 → Y髮`（如 `断发 → 斷髮`、`白发 → �
 | 字典編譯器 | `build/rel/src/tools/opencc_dict` |
 | 源文字檔（upstream，勿改） | `data/dictionary/*.txt` |
 | **客製 overlay** | `data/overlay/*.txt` |
-| **客製 config** | `data/overlay/s2twp-custom.json` |
+| **客製 config** | `data/overlay/s2twp-custom.json`、`s2twp-custom-mpdp.json` |
+| **mpdp 外掛原始碼** | `plugins/mpdp/src/MpdpPlugin.cpp` |
+| **mpdp 合併詞表產生器** | `plugins/mpdp/tools/build_mpdp_dict.py` |
+| **mpdp 安裝腳本** | `plugins/mpdp/tools/install.py` |
+| mpdp 外掛（已安裝） | `site-packages/opencc/clib/opencc/plugins/libopencc-mpdp.so` |
+| mpdp 合併詞表（已安裝） | `site-packages/opencc/clib/share/opencc/mpdp/jieba_mpdp.dict.utf8` |
 | 輸出二進制 | `build/rel/data/*.ocd2` |
 | Python 字典目錄 | `site-packages/opencc/clib/share/opencc/` |
 
