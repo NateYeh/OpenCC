@@ -20,3 +20,4 @@
 prebuilds/
 /*.egg-info
 /.venv/
+plugins/mpdp/build/
