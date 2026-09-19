@@ -13,6 +13,10 @@
      （jieba 對冷門詞給的頻率可能輸給單字切分的聯合機率，例：
      字段 freq=6 輸給 字|段（20380×23395），被 DP 拆開後
      TWPhrases 的 字段→欄位 永遠不生效；mmseg 反而能整詞匹配）
+  4. chain2 詞表（TWPhrases 等）的 key 是**繁體**，但分割器跑在**簡體輸入**上。
+     這些 key 必須連同 t2s 簡體形一起進詞表，否則規則 2/3 都幫不上忙；
+     例：無限循環（key）對不上 无限循环（輸入），於是被拆成 無限|循環，
+     overlay-tw 的 無限循環→無限迴圈 盾牌永遠不生效
 
 用法:
   python3 build_mpdp_dict.py --output /path/jieba_mpdp.dict.utf8 [--phrase-freq 3]
@@ -76,13 +80,36 @@ def resolve_regional_source() -> str | None:
 
 
 def load_keys(path: str) -> set[str]:
+    """讀取詞表的所有 key（tab 前的欄位），並補上其 t2s 簡體形。
+
+    分割器跑在簡體輸入上，而 chain2 的詞表 key 是繁體；不補簡體形，
+    該詞條就永遠對不上輸入（詳見模組 docstring 規則 4）。
+
+    Args:
+        path: 詞表路徑，格式為 ``key\tvalue``。
+
+    Returns:
+        set[str]: 原 key 與其簡體形的聯集。
+    """
     keys: set[str] = set()
     with io.open(path, encoding='utf-8') as handle:
         for line in handle:
             parts = line.rstrip('\n').split('\t')
             if len(parts) >= 2 and parts[0]:
                 keys.add(parts[0])
-    return keys
+    try:
+        from opencc import OpenCC  # noqa: PLC0415
+    except ImportError:
+        print('警告：無法載入 opencc，不補簡體形（chain2 繁體 key 可能被切開）',
+              file=sys.stderr)
+        return keys
+    converted = OpenCC('t2s')
+    simplified: set[str] = set()
+    for key in keys:
+        value = converted.convert(key)
+        if value != key:
+            simplified.add(value)
+    return keys | simplified
 
 
 def main() -> int:
