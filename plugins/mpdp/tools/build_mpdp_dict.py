@@ -9,6 +9,10 @@
   1. jieba 詞頻表原樣保留（提供真實頻率，供 DP 打分）
   2. 轉換詞條中 jieba 沒有的，補上並給定 phrase_freq
      （長詞天然勝過切分，故只需足以壓過切分即可）
+  3. 轉換詞條 jieba 已收錄、但頻率低於 phrase_freq 的，補到 phrase_freq
+     （jieba 對冷門詞給的頻率可能輸給單字切分的聯合機率，例：
+     字段 freq=6 輸給 字|段（20380×23395），被 DP 拆開後
+     TWPhrases 的 字段→欄位 永遠不生效；mmseg 反而能整詞匹配）
 
 用法:
   python3 build_mpdp_dict.py --output /path/jieba_mpdp.dict.utf8 [--phrase-freq 3]
@@ -95,8 +99,6 @@ def main() -> int:
         print(f'找不到 jieba 詞頻表: {args.jieba_dict}', file=sys.stderr)
         return 1
 
-    seen: set[str] = set()
-    extra: set[str] = set()
     sources = list(DEFAULT_SOURCES)
     regional = resolve_regional_source()
     if regional is None:
@@ -104,24 +106,32 @@ def main() -> int:
               '區域詞條（如 台式机）可能失去轉換', file=sys.stderr)
     else:
         sources.append(regional)
+
+    # 先讀完轉換詞條，才能在寫 jieba 詞行時就地補頻率（規則 3）
+    conversion_keys: set[str] = set()
+    for source in sources:
+        if not os.path.isfile(source):
+            print(f'略過不存在的詞表: {source}', file=sys.stderr)
+            continue
+        conversion_keys |= load_keys(source)
+
+    seen: set[str] = set()
+    extra: set[str] = set()
     with io.open(args.output, 'w', encoding='utf-8') as out:
         with io.open(args.jieba_dict, encoding='utf-8') as handle:
             for line in handle:
                 parts = line.split()
                 if len(parts) >= 2:
                     seen.add(parts[0])
+                    # 轉換詞條頻率不足 → 補到 phrase_freq，避免被單字切分拆開
+                    if parts[0] in conversion_keys and int(parts[1]) < args.phrase_freq:
+                        parts[1] = str(args.phrase_freq)
+                        line = ' '.join(parts) + '\n'
                 out.write(line if line.endswith('\n') else line + '\n')
 
-        for source in sources:
-            if not os.path.isfile(source):
-                print(f'略過不存在的詞表: {source}', file=sys.stderr)
-                continue
-            for key in load_keys(source):
-                if key not in seen:
-                    seen.add(key)
-                    extra.add(key)
-
-        for key in sorted(extra):
+        for key in sorted(conversion_keys - seen):
+            seen.add(key)
+            extra.add(key)
             out.write(f'{key} {args.phrase_freq} n\n')
 
     print(f'jieba 原有 {len(seen) - len(extra)}，補入轉換詞條 {len(extra)}，'
