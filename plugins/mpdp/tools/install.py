@@ -80,6 +80,11 @@ def install(args: argparse.Namespace) -> int:
     config_src = os.path.join(REPO_ROOT, 'data', 'overlay', 's2twp-custom-mpdp.json')
     if os.path.isfile(config_src):
         shutil.copy2(config_src, os.path.join(share, 's2twp-custom-mpdp.json'))
+
+    user_src = os.path.join(HERE, 'data', 'user.dict.utf8')
+    if os.path.isfile(user_src):
+        shutil.copy2(user_src, os.path.join(dict_dir, 'user.dict.utf8'))
+        print(f'安裝使用者覆寫詞表 → {dict_dir}/user.dict.utf8')
         print(f'安裝設定 -> {share}/s2twp-custom-mpdp.json')
 
     print('\n完成。驗證：')
