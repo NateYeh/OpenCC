@@ -77,9 +77,15 @@ def install(args: argparse.Namespace) -> int:
         '--repo-root', REPO_ROOT,
     ])
 
-    config_src = os.path.join(REPO_ROOT, 'data', 'overlay', 's2twp-custom-mpdp.json')
-    if os.path.isfile(config_src):
-        shutil.copy2(config_src, os.path.join(share, 's2twp-custom-mpdp.json'))
+    overlay_dir = os.path.join(REPO_ROOT, 'data', 'overlay')
+    if os.path.isdir(overlay_dir):
+        # overlay 字典是 runtime 讀取的 text 字典，**複製到站點目錄才會生效**。
+        # 過去這一步靠人工 cp，漏抄就會出現「來源改了、實際沒生效」的假象。
+        for name in sorted(os.listdir(overlay_dir)):
+            src = os.path.join(overlay_dir, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(share, name))
+        print(f'安裝 overlay 字典與設定 -> {share}/')
 
     user_src = os.path.join(HERE, 'data', 'user.dict.utf8')
     if os.path.isfile(user_src):

@@ -54,14 +54,17 @@ conversion_chain[0] inner group（union，取最長）:
 # 首次或升級：安裝指定版本
 pip install -U opencc==1.4.2
 
-# 部署 overlay（config 相對路徑以自身目錄為基準，須同目錄）
-TARGET="/home/nate/.conda/envs/py311/lib/python3.11/site-packages/opencc/clib/share/opencc"
-cp /mnt/public/Develop/Projects/external_projects/OpenCC/data/overlay/* "$TARGET/"
-
-# 若要用 mpdp 分割（現行預設）→ 編譯外掛 + 產生合併詞表
+# 部署（現行預設：mpdp 分割）
 cd /mnt/public/Develop/Projects/external_projects/OpenCC
 python3 plugins/mpdp/tools/install.py
 ```
+
+`install.py` 會一併完成：編譯外掛 → 產生 mpdp 合併詞表 → 複製
+`data/user.dict.utf8` → **複製 `data/overlay/` 全部檔案**到
+site-packages 的 share 目錄。
+
+> ⚠️ 早期 overlay txt 靠人工 `cp`，漏抄就會出現「來源改了、實際沒生效」的假象；
+> 现已在 `install.py` 裡自動處理（2026-10 修正）。
 
 > ⚠️ **改了 overlay 就要重建 mpdp 合併詞表**，否則新加的盾牌詞不在分割詞表內，
 > 會被 DP 切開而失效（詳見底下專節）。
@@ -231,6 +234,8 @@ python3 -c "from opencc import OpenCC; print(OpenCC('s2twp').convert('娘亲'))"
 | 新加 overlay-tw 盾牌兩個模式都失效 | 鍵寫成簡體（chain2 需要繁體鍵） | 改成繁體，例：`的士氣` |
 | mpdp 下多字盾牌失效（mmseg 正常） | chain2 繁體 key 沒補 t2s 簡體形 | 重建詞表（builder 規則 4） |
 | 詞明明在字典卻被切開 | 詞條頻率輸給單字切分聯合機率 | builder 規則 3 會補到 `phrase_freq` |
+| 加了繁體自我映射，簡體輸入反而變錯 | chain1 貪婪命中更短的詞（例 `后车` → `後車`） | **同時補同詞的簡體鍵**（例 `后车斗 → 後車斗`） |
+| 已是繁體的輸入被改壞（`後斗` → `後鬥`） | `STCharacters` 單字多值取第一個：`斗 → 鬥 斗` | chain1 加該詞的**繁體自我映射**（`後斗 → 後斗`），並重建 mpdp 詞表 |
 
 ---
 
@@ -423,10 +428,11 @@ OpenCC 的 `MatchPrefix` 只取**第一個值**：
 > `改口必给台阶自己下` 仍輸出 `臺階`——因為分割器把 `台阶` 切開了，
 > 詞條根本沒機會命中。重跑 `install.py` 後才修好。
 >
-> ⚠️ **`install.py` 不會複製 overlay txt**（只更新 config 與 mpdp 詞表）。
+> ⚠️ **`install.py` 早期不會複製 overlay txt**（只更新 config 與 mpdp 詞表），
 > 改完 `data/overlay/*.txt` 必須手動 `cp data/overlay/*.txt "$TARGET/"`，
 > 否則 runtime 讀到的還是 site-packages 裡的舊檔——本案例實測踩到：
-> 詞表已含新詞條、轉換卻毫無變化。
+> 詞表已含新詞條、轉換卻毫無變化。**現已修正在 `install.py` 自動複製，
+> 不再需要手動 `cp`。**
 
 ### 解決策略：加長詞組「盾牌」
 
