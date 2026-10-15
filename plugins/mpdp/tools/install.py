@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -45,6 +46,31 @@ def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
 
 
+def atomic_copy(src: str, dst: str) -> None:
+    """原子替換複製檔案（先寫同目錄暫存檔，再 os.replace）。
+
+    以 shutil.copy2 直接覆寫是「就地截斷重寫同一 inode」；若目標是
+    .so，已被執行中行程 dlopen（mmap）的話，該行程會執行到被換掉的
+    程式碼頁而 SIGSEGV（2026-10-14 book_web 崩潰即此因）。
+    原子替換讓執行中的行程續用舊 inode，新行程才會載入新版。
+
+    Args:
+        src: 來源檔案。
+        dst: 目標路徑。
+    """
+    directory = os.path.dirname(dst)
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix='.mpdp-install-', dir=directory)
+    os.close(fd)
+    try:
+        shutil.copy2(src, temp_path)
+        os.replace(temp_path, dst)
+    except BaseException:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise
+
+
 def build() -> str:
     os.makedirs(BUILD_DIR, exist_ok=True)
     lib = os.path.join(BUILD_DIR, LIB_NAME)
@@ -66,7 +92,7 @@ def install(args: argparse.Namespace) -> int:
     os.makedirs(dict_dir, exist_ok=True)
 
     lib = build()
-    shutil.copy2(lib, os.path.join(plugins, LIB_NAME))
+    atomic_copy(lib, os.path.join(plugins, LIB_NAME))
     print(f'安裝外掛 -> {plugins}/{LIB_NAME}')
 
     run([
@@ -84,12 +110,12 @@ def install(args: argparse.Namespace) -> int:
         for name in sorted(os.listdir(overlay_dir)):
             src = os.path.join(overlay_dir, name)
             if os.path.isfile(src):
-                shutil.copy2(src, os.path.join(share, name))
+                atomic_copy(src, os.path.join(share, name))
         print(f'安裝 overlay 字典與設定 -> {share}/')
 
     user_src = os.path.join(HERE, 'data', 'user.dict.utf8')
     if os.path.isfile(user_src):
-        shutil.copy2(user_src, os.path.join(dict_dir, 'user.dict.utf8'))
+        atomic_copy(user_src, os.path.join(dict_dir, 'user.dict.utf8'))
         print(f'安裝使用者覆寫詞表 → {dict_dir}/user.dict.utf8')
         print(f'安裝設定 -> {share}/s2twp-custom-mpdp.json')
 
@@ -100,6 +126,8 @@ def install(args: argparse.Namespace) -> int:
          'print(OpenCC("s2twp-custom-mpdp").convert("医生发出，断发纹身"))'],
         capture_output=True, text=True)
     print(' ', check.stdout.strip() or check.stderr.strip())
+    print('\n注意：已載入舊外掛的執行中行程仍在使用舊版（inode 未被動到），'
+          '要讓服務吃到新版請重啟該服務（如 scripts/services.sh）。')
     return 0 if check.returncode == 0 else 1
 
 
