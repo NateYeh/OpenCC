@@ -113,11 +113,13 @@ def install(args: argparse.Namespace) -> int:
                 atomic_copy(src, os.path.join(share, name))
         print(f'安裝 overlay 字典與設定 -> {share}/')
 
-    user_src = os.path.join(HERE, 'data', 'user.dict.utf8')
+    user_src = os.path.join(PLUGIN_ROOT, 'data', 'user.dict.utf8')
     if os.path.isfile(user_src):
         atomic_copy(user_src, os.path.join(dict_dir, 'user.dict.utf8'))
         print(f'安裝使用者覆寫詞表 → {dict_dir}/user.dict.utf8')
         print(f'安裝設定 -> {share}/s2twp-custom-mpdp.json')
+    else:
+        print(f'⚠️ 找不到 {user_src}，略過使用者覆寫詞表（分割品質會退化）')
 
     print('\n完成。驗證：')
     check = subprocess.run(
